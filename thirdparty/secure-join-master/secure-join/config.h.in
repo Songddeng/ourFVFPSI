@@ -1,0 +1,11 @@
+#pragma once
+
+
+// build with paillier
+#cmakedefine SECUREJOIN_ENABLE_PAILLIER @SECUREJOIN_ENABLE_PAILLIER@
+
+// build with fake triple gen.
+#cmakedefine SECUREJOIN_ENABLE_FAKE_GEN @SECUREJOIN_ENABLE_FAKE_GEN@
+
+// defining the root directory
+#cmakedefine SEC_JOIN_ROOT_DIRECTORY "@SEC_JOIN_ROOT_DIRECTORY@"

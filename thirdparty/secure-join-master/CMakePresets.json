@@ -1,0 +1,117 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "linux",
+      "displayName": "Linux",
+      "description": "Target the Windows Subsystem for Linux (WSL) or a remote Linux system.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "SECUREJOIN_ENABLE_ASAN": false,
+        "SECUREJOIN_ENABLE_FAKE_GEN": true,
+        "SECUREJOIN_ENABLE_BOOST": false,
+        "FETCH_AUTO": "ON",
+        "SECUREJOIN_DEV": false,
+        "SECUREJOIN_STATIC_WRAPPER": true,
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Linux"
+          ]
+        },
+        "microsoft.com/VisualStudioRemoteSettings/CMake/1.0": {
+          "sourceDir": "$env{HOME}/.vs/$ms{projectDirName}"
+        }
+      }
+    },
+    {
+      "name": "x64-Debug",
+      "displayName": "Windows x64 Debug",
+      "description": "Target Windows with the Visual Studio development environment.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FETCH_AUTO": "ON",
+        "SECUREJOIN_ENABLE_ASAN": false,
+        "SECUREJOIN_ENABLE_SSE": true,
+        "SECUREJOIN_ENABLE_FAKE_GEN": true,
+        "SECUREJOIN_ENABLE_BOOST": false,
+        "SECUREJOIN_ENABLE_PAILLIER": false,
+        "SECUREJOIN_STATIC_WRAPPER": true,
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "name": "x64-Release",
+      "displayName": "Windows x64 Release",
+      "description": "Target Windows with the Visual Studio development environment.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "FETCH_AUTO": "ON",
+        "SECUREJOIN_ENABLE_ASAN": false,
+        "SECUREJOIN_ENABLE_SSE": true,
+        "SECUREJOIN_ENABLE_BOOST": false,
+        "SECUREJOIN_ENABLE_PAILLIER": false,
+        "SECUREJOIN_STATIC_WRAPPER": true,
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "name": "osx",
+      "displayName": "Custom configure preset",
+      "description": "Sets Ninja generator, build and install directory",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "FETCH_AUTO": true,
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_PORTABLE_AES":true,
+        "ENABLE_ARM_AES":true,
+        "ENABLE_MOCK_OT":true,
+        "ENABLE_RELIC":false,
+        "SECUREJOIN_ENABLE_SSE": false,
+        "SECUREJOIN_ENABLE_ASAN": true,
+        "SECUREJOIN_ENABLE_FAKE_GEN": true,
+        "SECUREJOIN_ENABLE_BOOST": false,
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "macOS"
+          ]
+        }
+      }
+    }
+  ]
+}

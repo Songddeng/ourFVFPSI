@@ -1,0 +1,33 @@
+#pragma once
+#include <coproto/Socket/Socket.h>
+#include <cryptoTools/Common/block.h>
+#include <libOTe/TwoChooseOne/Silent/SilentOtExtReceiver.h>
+#include <libOTe/TwoChooseOne/Silent/SilentOtExtSender.h>
+
+class MulSender {
+public:
+    MulSender(uint64_t num_, coproto::Socket *socket_);
+    ~MulSender();
+    void mul(std::vector<uint64_t> &blk, std::vector<uint64_t> &val);
+
+    uint64_t num;
+
+private:
+    coproto::Socket *socket;
+    osuCrypto::SilentOtExtSender *sender;
+    osuCrypto::PRNG *prng;
+};
+
+class MulRecver {
+public:
+    MulRecver(uint64_t num_, coproto::Socket *socket_);
+    ~MulRecver();
+    void mul(std::vector<uint64_t> &blk, std::vector<uint64_t> &val);
+
+    uint64_t num;
+
+private:
+    coproto::Socket *socket;
+    osuCrypto::SilentOtExtReceiver *receiver;
+    osuCrypto::PRNG *prng;
+};
