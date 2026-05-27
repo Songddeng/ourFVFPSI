@@ -64,3 +64,4 @@ test/output.txt
 thirdparty/secure-join
 thirdparty/out
 thirdparty/volepsi
+.git-test-probe/
