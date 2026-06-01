@@ -16,12 +16,49 @@
 #include "mul.h"
 #include "mux.h"
 #include "param.h"
+#include "stage_profile.h"
 #include "secure-join/Prf/AltModPrf.h"
 #include "utils.h"
 
 using namespace secJoin;
 
 int shift = 1; // modify prefixLen by shift
+
+namespace {
+
+uint64_t totalCommBytes(std::array<coproto::AsioSocket, 2> &sock, std::array<coproto::AsioSocket, 2> &sock2)
+{
+    return sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent();
+}
+
+void printSummaryLine(
+    const std::string &proto,
+    const std::string &metric,
+    size_t d,
+    int delta,
+    u64 n,
+    double comm,
+    double comp,
+    double fmapComm,
+    double filterComm,
+    double otComm)
+{
+    std::cout << fmt::format(
+                     "{:<12} {:<6} {:^5} {:^5} {:^5} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f}",
+                     proto,
+                     metric,
+                     d,
+                     delta,
+                     n,
+                     comm,
+                     comp,
+                     fmapComm,
+                     filterComm,
+                     otComm)
+              << std::endl;
+}
+
+} // namespace
 
 // to be fixed
 void LocalMapPrefix(std::vector<std::vector<u64>> &inputs, std::vector<block> &pid, std::vector<block> &listKey, std::vector<block> &listVal, int delta)
@@ -463,8 +500,12 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
 
     auto sock = coproto::AsioSocket::makePair();
     auto sock2 = coproto::AsioSocket::makePair();
+    StageProfileSummary stageSummary;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
+        StageProfileRun stageRun(stageSummary);
+        stageRun.start(totalCommBytes(sock, sock2));
+
         std::vector<block> rand_R_j(n);
         std::vector<block> rand_S_j(n);
         std::vector<block> ID_R(n);
@@ -492,6 +533,7 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
 
         // fmap finish
         time.setTimePoint("fmap-prefix done");
+        stageRun.mark("fmap-prefix done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -600,6 +642,7 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
         recvFilter.join();
 
         time.setTimePoint("filter done");
+        stageRun.mark("filter done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -660,6 +703,7 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
             for (int i = 0; i < choiceBit.size(); i++) {
@@ -673,6 +717,7 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
             std::cout << "All matches found!" << std::endl;
 
             std::cout << time << std::endl;
+            stageSummary.print();
         }
     }
 
@@ -683,16 +728,11 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
 
     comp /= numTry;
     comm /= numTry;
+    const double fmapComm = stageSummary.getAverageCommMB("fmap-prefix done");
+    const double filterComm = stageSummary.getAverageCommMB("filter done");
+    const double otComm = stageSummary.getAverageCommMB("OT done");
 
-    std::cout << fmt::format(
-                     "[ours-prefix]    L0    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                     "{:^10.3f}",
-                     d,
-                     delta,
-                     n,
-                     comm,
-                     comp)
-              << std::endl;
+    printSummaryLine("[ours-prefix]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
 
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
@@ -811,8 +851,12 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
 
     auto sock = coproto::AsioSocket::makePair();
     auto sock2 = coproto::AsioSocket::makePair();
+    StageProfileSummary stageSummary;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
+        StageProfileRun stageRun(stageSummary);
+        stageRun.start(totalCommBytes(sock, sock2));
+
         std::vector<block> rand_R_j(n);
         std::vector<block> rand_S_j(n);
         std::vector<block> ID_R(n);
@@ -841,6 +885,7 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
         // fmap finish
 
         time.setTimePoint("fmap-prefix done");
+        stageRun.mark("fmap-prefix done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -1143,6 +1188,7 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
         recvFilter.join();
 
         time.setTimePoint("filter done");
+        stageRun.mark("filter done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -1203,6 +1249,7 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
             for (int i = 0; i < choiceBit.size(); i++) {
@@ -1216,6 +1263,7 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
             std::cout << "All matches found!" << std::endl;
 
             std::cout << time << std::endl;
+            stageSummary.print();
         }
     }
 
@@ -1226,27 +1274,14 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
 
     comp /= numTry;
     comm /= numTry;
+    const double fmapComm = stageSummary.getAverageCommMB("fmap-prefix done");
+    const double filterComm = stageSummary.getAverageCommMB("filter done");
+    const double otComm = stageSummary.getAverageCommMB("OT done");
 
     if (lp == 1) {
-        std::cout << fmt::format(
-                         "[ours-prefix]    L1    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                         "{:^10.3f}",
-                         d,
-                         delta,
-                         n,
-                         comm,
-                         comp)
-                  << std::endl;
+        printSummaryLine("[ours-prefix]", "L1", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     } else {
-        std::cout << fmt::format(
-                         "[ours-prefix]    L2    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                         "{:^10.3f}",
-                         d,
-                         delta,
-                         n,
-                         comm,
-                         comp)
-                  << std::endl;
+        printSummaryLine("[ours-prefix]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //           << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;

@@ -5,7 +5,7 @@ ns=(12)
 dims=(8)
 deltas=(16 64 256 1024)
 
-printf "[ProType] [Metric] [Dim] [Delta] [Size] [Com.(MB)] [Time(s)]\n"
+printf "[ProType] [Metric] [Dim] [Delta] [Size] [Com.(MB)] [Time(s)] [FMapCom.(MB)] [FilterCom.(MB)] [OTCom.(MB)]\n"
 
 for n in "${ns[@]}"; do
   for dim in "${dims[@]}"; do
@@ -17,5 +17,4 @@ for n in "${ns[@]}"; do
     done
   done
 done
-
 

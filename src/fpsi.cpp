@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fmt/format.h>
 #include <iostream>
+#include <limits>
 #include <macoro/trace.h>
 #include <macoro/sync_wait.h>
 #include <macoro/thread_pool.h>
@@ -17,10 +18,65 @@
 #include "SoOPPRF.h"
 #include "b2a.h"
 #include "eq.h"
+#include "stage_profile.h"
 #include "secure-join/Prf/AltModPrf.h"
 #include "utils.h"
 
 using namespace secJoin;
+
+namespace {
+
+uint64_t totalCommBytes(std::array<coproto::AsioSocket, 2> &sock, std::array<coproto::AsioSocket, 2> &sock2)
+{
+    return sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent();
+}
+
+u64 gridIndex(u64 value, int delta)
+{
+    if (delta <= 0) {
+        throw std::runtime_error("delta must be positive");
+    }
+
+    return value / static_cast<u64>(delta);
+}
+
+std::pair<u64, u64> gridCandidateRange(u64 value, int delta)
+{
+    const auto idx = gridIndex(value, delta);
+    const auto start = idx == 0 ? 0 : idx - 1;
+    const auto end = idx == std::numeric_limits<u64>::max() ? idx : idx + 1;
+
+    return { start, end };
+}
+
+void printSummaryLine(
+    const std::string &proto,
+    const std::string &metric,
+    size_t d,
+    int delta,
+    u64 n,
+    double comm,
+    double comp,
+    double fmapComm,
+    double filterComm,
+    double otComm)
+{
+    std::cout << fmt::format(
+                     "{:<12} {:<6} {:^5} {:^5} {:^5} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f}",
+                     proto,
+                     metric,
+                     d,
+                     delta,
+                     n,
+                     comm,
+                     comp,
+                     fmapComm,
+                     filterComm,
+                     otComm)
+              << std::endl;
+}
+
+} // namespace
 
 // to be fixed
 void LocalMap(std::vector<std::vector<u64>> &inputs, std::vector<block> &pid, std::vector<block> &listKey, std::vector<block> &listVal, int delta)
@@ -44,9 +100,9 @@ void LocalMap(std::vector<std::vector<u64>> &inputs, std::vector<block> &pid, st
         std::vector<std::pair<u64, u64>> interval;
         interval.reserve(m);
 
-        // get interval [a_i - radius, a_i + radius]
+        // Encode only the grid cells that can collide with values within delta.
         for (auto &elem : inputs) {
-            interval.push_back({ elem[i] - delta, elem[i] + delta });
+            interval.push_back(gridCandidateRange(elem[i], delta));
         }
 
         // Sort points by x-coordinate; if equal, sort by y-coordinate
@@ -74,10 +130,11 @@ void LocalMap(std::vector<std::vector<u64>> &inputs, std::vector<block> &pid, st
     for (u64 i = 0; i < d; i++) {
         for (u64 j = 0; j < m; j++) {
             auto elem = inputs[j];
+            auto idx = gridIndex(elem[i], delta);
 
-            auto it = std::lower_bound(intervals[i].begin(), intervals[i].end(), elem[i], compare_lambda);
+            auto it = std::lower_bound(intervals[i].begin(), intervals[i].end(), idx, compare_lambda);
 
-            if (it != intervals[i].end() && it->first <= elem[i] && elem[i] <= it->second) {
+            if (it != intervals[i].end() && it->first <= idx && idx <= it->second) {
                 auto interval_index = distance(intervals[i].begin(), it);
                 pid[j] ^= randR[i * m + interval_index];
             } else {
@@ -99,10 +156,10 @@ void LocalMap(std::vector<std::vector<u64>> &inputs, std::vector<block> &pid, st
         }
     }
 
-    if (listKey.size() > d * m * (2 * delta + 1)) {
+    if (listKey.size() > d * m * 3) {
         throw runtime_error("something wrong in LocalMap");
     }
-    while (listKey.size() < d * m * (2 * delta + 1)) {
+    while (listKey.size() < d * m * 3) {
         listKey.push_back(prng.get<block>());
         listVal.push_back(prng.get<block>());
     }
@@ -131,12 +188,12 @@ void FuzzyMap(
     std::vector<block> rand_S_j(n);
 
     std::thread sendSoOPPRFReverse([&] {
-        SoOPPRFRecver recv(n * d, n * d * (2 * delta + 1), 1, false, &sock[0]);
+        SoOPPRFRecver recv(n * d, n * d * 3, 1, false, &sock[0]);
 
         std::vector<block> inputs(n * d);
         for (u64 i = 0; i < n; i++) {
             for (u64 j = 0; j < d; j++) {
-                inputs[i * d + j] = block(j, sendSet[i][j]);
+                inputs[i * d + j] = block(j, gridIndex(sendSet[i][j], delta));
             }
         }
         std::vector<block> rand_S(n * d);
@@ -153,7 +210,7 @@ void FuzzyMap(
     });
 
     std::thread recvSoOPPRFReverse([&] {
-        SoOPPRFSender send(n * d, n * d * (2 * delta + 1), 1, false, &sock[1]);
+        SoOPPRFSender send(n * d, n * d * 3, 1, false, &sock[1]);
 
         std::vector<block> rand_R(n * d);
 
@@ -207,7 +264,7 @@ void FuzzyMap(
     rand_S_j = std::vector<block>(n, ZeroBlock);
 
     std::thread sendSoOPPRF([&] {
-        SoOPPRFSender send(n * d, n * d * (2 * delta + 1), 1, false, &sock[0]);
+        SoOPPRFSender send(n * d, n * d * 3, 1, false, &sock[0]);
 
         std::vector<block> rand_S(n * d);
 
@@ -222,12 +279,12 @@ void FuzzyMap(
     });
 
     std::thread recvSoOPPRF([&] {
-        SoOPPRFRecver recv(n * d, n * d * (2 * delta + 1), 1, false, &sock[1]);
+        SoOPPRFRecver recv(n * d, n * d * 3, 1, false, &sock[1]);
 
         std::vector<block> inputs(n * d);
         for (u64 i = 0; i < n; i++) {
             for (u64 j = 0; j < d; j++) {
-                inputs[i * d + j] = block(j, recvSet[i][j]);
+                inputs[i * d + j] = block(j, gridIndex(recvSet[i][j], delta));
             }
         }
         std::vector<block> rand_R(n * d);
@@ -342,7 +399,7 @@ void fuzzyPsi(const oc::CLP &cmd)
     sendLocalMap.join();
     recvLocalMap.join();
 
-    auto preOKVS = OKVS(n * d * (2 * delta + 1));
+    auto preOKVS = OKVS(n * d * 3);
     AltModPrf::KeyType senderKey = AltModPrf::KeyType({
         block(0, 1),
         block(0, 2),
@@ -373,8 +430,12 @@ void fuzzyPsi(const oc::CLP &cmd)
 
     auto sock = coproto::AsioSocket::makePair();
     auto sock2 = coproto::AsioSocket::makePair();
+    StageProfileSummary stageSummary;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
+        StageProfileRun stageRun(stageSummary);
+        stageRun.start(totalCommBytes(sock, sock2));
+
         std::vector<block> ID_R(n);
         std::vector<block> ID_S(n);
         std::vector<block> rand_R_j(n);
@@ -393,6 +454,7 @@ void fuzzyPsi(const oc::CLP &cmd)
 
         // fmap finish
         time.setTimePoint("fmap done");
+        stageRun.mark("fmap done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -468,6 +530,7 @@ void fuzzyPsi(const oc::CLP &cmd)
         recvFilter.join();
 
         time.setTimePoint("filter done");
+        stageRun.mark("filter done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -528,6 +591,7 @@ void fuzzyPsi(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
             for (int i = 0; i < choiceBit.size(); i++) {
@@ -541,6 +605,7 @@ void fuzzyPsi(const oc::CLP &cmd)
             std::cout << "All matches found!" << std::endl;
 
             std::cout << time << std::endl;
+            stageSummary.print();
         }
     }
 
@@ -551,16 +616,11 @@ void fuzzyPsi(const oc::CLP &cmd)
 
     comp /= numTry;
     comm /= numTry;
+    const double fmapComm = stageSummary.getAverageCommMB("fmap done");
+    const double filterComm = stageSummary.getAverageCommMB("filter done");
+    const double otComm = stageSummary.getAverageCommMB("OT done");
 
-    std::cout << fmt::format(
-                     "[ours]    L0    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                     "{:^10.3f}",
-                     d,
-                     delta,
-                     n,
-                     comm,
-                     comp)
-              << std::endl;
+    printSummaryLine("[ours]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
 }
@@ -631,7 +691,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     sendLocalMap.join();
     recvLocalMap.join();
 
-    auto preOKVS = OKVS(n * d * (2 * delta + 1));
+    auto preOKVS = OKVS(n * d * 3);
     AltModPrf::KeyType senderKey = AltModPrf::KeyType({
         block(0, 1),
         block(0, 2),
@@ -662,8 +722,12 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
     auto sock = coproto::AsioSocket::makePair();
     auto sock2 = coproto::AsioSocket::makePair();
+    StageProfileSummary stageSummary;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
+        StageProfileRun stageRun(stageSummary);
+        stageRun.start(totalCommBytes(sock, sock2));
+
         std::vector<block> ID_R(n);
         std::vector<block> ID_S(n);
         std::vector<block> rand_R_j(n);
@@ -678,6 +742,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         // fmap finish
         time.setTimePoint("fmap done");
+        stageRun.mark("fmap done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -798,6 +863,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         recvFilter.join();
 
         time.setTimePoint("filter done");
+        stageRun.mark("filter done", totalCommBytes(sock, sock2));
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
@@ -858,6 +924,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
             for (int i = 0; i < choiceBit.size(); i++) {
@@ -871,6 +938,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             std::cout << "All matches found!" << std::endl;
 
             std::cout << time << std::endl;
+            stageSummary.print();
         }
     }
 
@@ -881,27 +949,14 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
     comp /= numTry;
     comm /= numTry;
+    const double fmapComm = stageSummary.getAverageCommMB("fmap done");
+    const double filterComm = stageSummary.getAverageCommMB("filter done");
+    const double otComm = stageSummary.getAverageCommMB("OT done");
 
     if (lp == 1) {
-        std::cout << fmt::format(
-                         "[ours]    L1    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                         "{:^10.3f}",
-                         d,
-                         delta,
-                         n,
-                         comm,
-                         comp)
-                  << std::endl;
+        printSummaryLine("[ours]", "L1", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     } else {
-        std::cout << fmt::format(
-                         "[ours]    L2    {:^5}  {:^5}  {:^5}  {:^10.3f} "
-                         "{:^10.3f}",
-                         d,
-                         delta,
-                         n,
-                         comm,
-                         comp)
-                  << std::endl;
+        printSummaryLine("[ours]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
 
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
