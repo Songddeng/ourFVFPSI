@@ -1,0 +1,17 @@
+build
+.cache
+.vscode
+libOTe
+data
+scripts/
+test.sh
+data/
+data1/
+dataoff/
+scripts
+data.csv
+dataoff_fu
+data_com*
+1.txt
+datanew/
+dataq/
