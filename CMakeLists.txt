@@ -64,6 +64,7 @@ find_package(fmt REQUIRED)
 
 target_link_libraries(fpsi PRIVATE oc::cryptoTools oc::libOTe visa::volePSI fmt::fmt)
 target_link_libraries(fpsi PRIVATE ${SECUREJOIN_LIBRARY})
+target_include_directories(fpsi PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/2PC_eq_cmp-test)
 
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
@@ -76,7 +77,7 @@ add_definitions(-DNDEBUG)
 
 if(FPSI_ENABLE_SECURE_CMP_EXAMPLE)
   add_executable(test_secure_cmp tests/test_secure_cmp.cpp)
-  target_link_libraries(test_secure_cmp PRIVATE secure_cmp::secure_cmp)
+  target_link_libraries(test_secure_cmp PRIVATE secure_cmp::secure_cmp secure_cmp_deps)
   target_include_directories(test_secure_cmp PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/2PC_eq_cmp-test)
 
   if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")

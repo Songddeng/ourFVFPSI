@@ -17,6 +17,7 @@
 #include "libOTe/Vole/Silent/SilentVoleSender.h"
 #include "n1not.h"
 #include <boost/type_traits/type_with_alignment.hpp>
+#include <chrono>
 #include <cstdint>
 #include <macoro/sync_wait.h>
 #include <vector>
@@ -26,6 +27,13 @@
 using namespace std;
 using namespace osuCrypto;
 using namespace coproto;
+
+struct CmpProfile {
+    double offline_ms = 0.0;
+    double online_ms = 0.0;
+    uint64_t offline_comm_bytes = 0;
+    uint64_t online_comm_bytes = 0;
+};
 
 template<typename T>
 class cmp1{
@@ -51,6 +59,7 @@ private:
     SilentVoleSender<Zp, Zp, MyCoeffCtx> *volesender;
     PRNG prg;
     int n, ell;
+    CmpProfile *profile = nullptr;
     void initOT();
     void convert_offline(T p, int size);
     void convert_online(T p, int size, BitVector bits, T* output);
@@ -64,21 +73,33 @@ private:
     void pre_sum(int p);
     void get_index(int n, uint32_t ell, BitVector &res);
 public:
-    cmp1(Role role, string ip, int n, int ell);
+    cmp1(Role role, string ip, int n, int ell, CmpProfile *profile = nullptr);
     void run(vector<block> data, BitVector &output, uint32_t ell, int numThreads = 1, bool random = false);
 };
 
 template<typename T>
-cmp1<T>::cmp1(Role role, string ip, int n, int ell) {
+cmp1<T>::cmp1(Role role, string ip, int n, int ell, CmpProfile *profile) {
     this->role = role;
     this->n = n;
     this->ell = ell;
+    this->profile = profile;
     p = getmod(ell);
     Zp::p = p;
     chl = coproto::asioConnect(ip, role == Role::Sender);
     // prg.SetSeed(sysRandomSeed());
     prg.SetSeed(sysRandomSeed());
+
+    Timer timer;
+    auto init_start = timer.setTimePoint("cmp_init_start");
+    u64 init_comm_begin = chl.bytesReceived() + chl.bytesSent();
     initOT();
+    auto init_end = timer.setTimePoint("cmp_init_end");
+    u64 init_comm_end = chl.bytesReceived() + chl.bytesSent();
+
+    if (this->profile) {
+        this->profile->offline_ms += std::chrono::duration_cast<std::chrono::microseconds>(init_end - init_start).count() / 1000.0;
+        this->profile->offline_comm_bytes += init_comm_end - init_comm_begin;
+    }
 }
 
 template<typename T>
@@ -121,10 +142,14 @@ void cmp1<T>::run(vector<block> data, BitVector &output, uint32_t ell, int numTh
     oss_offline(pi, pi1);
 
     offline_end = timer.setTimePoint("offline_end");
-    u64 com_off_end = chl.bytesReceived() + chl.bytesSent();
     
     cout << "=====offline end=====" << endl;
     sync_wait(sync(chl, role));
+    u64 com_sync_end = chl.bytesReceived() + chl.bytesSent();
+    if (profile) {
+        profile->offline_ms += std::chrono::duration_cast<std::chrono::microseconds>(offline_end - offline_start).count() / 1000.0;
+        profile->offline_comm_bytes += com_sync_end - com_off_begin;
+    }
     //==========online===========
     cout << "=====online start=====" << endl;
     u64 com_begin = chl.bytesReceived() + chl.bytesSent();
@@ -139,6 +164,12 @@ void cmp1<T>::run(vector<block> data, BitVector &output, uint32_t ell, int numTh
     oss_online(pi1, output);
 
     online_end = timer.setTimePoint("online_end");
+    u64 com_end = chl.bytesReceived() + chl.bytesSent();
+
+    if (profile) {
+        profile->online_ms += std::chrono::duration_cast<std::chrono::microseconds>(online_end - online_start).count() / 1000.0;
+        profile->online_comm_bytes += com_end - com_begin;
+    }
 
     cout << "=====online end=====" << endl;
 }
@@ -156,7 +187,8 @@ void cmp1<T>::pre_sum(int p) {
                 s[tmpi + j] = (pres + 1 - m[tmpii+j] + p) % p;
                 pres = (pres + m[tmpii+j]) % p;
             }
-            s[tmpi + ell] = (pres + 1) % p;
+            //s[tmpi + ell] = (pres + 1) % p;
+            s[tmpi + ell] = (pres - 1 + p) % p; //add 0
             s[tmpi + ell + 1] = 1;
         }
     } else {
@@ -169,7 +201,8 @@ void cmp1<T>::pre_sum(int p) {
                 s[tmpi + j] = (pres + p - m[tmpii+j]) % p;
                 pres = (pres + m[tmpii+j]) % p;
             }
-            s[tmpi + ell] = (pres - 1 + p) % p;
+            //s[tmpi + ell] = (pres - 1 + p) % p;
+            s[tmpi + ell] = (pres + 1) % p; //add 1
             s[tmpi + ell + 1] = 1;
         }
     }

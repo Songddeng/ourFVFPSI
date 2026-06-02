@@ -88,6 +88,7 @@ target_link_libraries(secure_cmp_deps
 
 add_library(secure_cmp STATIC
     utils.cpp
+    secure_cmp_bridge.cpp
 )
 
 add_library(secure_cmp::secure_cmp ALIAS secure_cmp)
@@ -108,7 +109,7 @@ target_include_directories(secure_cmp
 )
 
 target_link_libraries(secure_cmp
-    PUBLIC
+    PRIVATE
         secure_cmp_deps
 )
 
@@ -127,8 +128,24 @@ if(SECURE_CMP_BUILD_EXAMPLE)
             -fopenmp
     )
 
-    target_link_libraries(eq_cmp PRIVATE secure_cmp)
+    target_link_libraries(eq_cmp PRIVATE secure_cmp secure_cmp_deps)
 endif()
+
+add_executable(secure_cmp_runner
+    secure_cmp_runner.cpp
+)
+
+target_compile_features(secure_cmp_runner PRIVATE cxx_std_20)
+target_compile_options(secure_cmp_runner
+    PRIVATE
+        -Wall
+        -Wfatal-errors
+        -Wno-unused-variable
+        -fcoroutines
+        -fopenmp
+)
+
+target_link_libraries(secure_cmp_runner PRIVATE secure_cmp secure_cmp_deps)
 
 if(SECURE_CMP_BUILD_ORIGINAL_MAIN)
     add_executable(secure_cmp_original
@@ -145,5 +162,5 @@ if(SECURE_CMP_BUILD_ORIGINAL_MAIN)
             -fopenmp
     )
 
-    target_link_libraries(secure_cmp_original PRIVATE secure_cmp)
+    target_link_libraries(secure_cmp_original PRIVATE secure_cmp secure_cmp_deps)
 endif()
