@@ -65,7 +65,7 @@ Below are the commonly used command-line flags. Flags use a leading dash (for ex
 | Flag | Meaning | Values / Notes |
 |---|---|---|
 | `-d` | Dimension | integer |
-| `-m` | Metric | `0`: $L_\infty$, `1`: $L_1$, `2`: $L_2$ |
+| `-p` | Metric | `0`: $L_\infty$, `1`: $L_1$, `2`: $L_2$ |
 | `-delta` | Distance threshold (δ) | recommended to be a power of 2 |
 | `-nn` | log2 of input set size (n) | tested values: `8`~`16` |
 | `-v` | Verbosity | `0`: off (default), `1`: info |
