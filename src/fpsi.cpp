@@ -18,6 +18,7 @@
 #include "SoOPPRF.h"
 #include "b2a.h"
 #include "eq.h"
+#include "id_stats.h"
 #include "stage_profile.h"
 #include "secure-join/Prf/AltModPrf.h"
 #include "utils.h"
@@ -243,6 +244,7 @@ void FuzzyMap(
         for (int i = 0; i < n; i++) {
             ID_S[i] = share_R[i] ^ share_S[i];
         }
+        fpsi::stats::id_generated_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
     });
 
     std::thread recvSiOPRFReverse([&] {
@@ -329,6 +331,7 @@ void FuzzyMap(
         for (int i = 0; i < n; i++) {
             ID_R[i] = share_R[i] ^ share_S[i];
         }
+        fpsi::stats::id_generated_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
     });
 
     sendSiOPRF.join();
@@ -339,6 +342,8 @@ void FuzzyMap(
 
 void fuzzyPsi(const oc::CLP &cmd)
 {
+    fpsi::stats::reset_id_stats();
+
     u64 n = cmd.getOr("n", 1ull << cmd.getOr("nn", 10));
     size_t d = cmd.getOr("d", 2);
     int delta = cmd.getOr("delta", 2);
@@ -435,6 +440,7 @@ void fuzzyPsi(const oc::CLP &cmd)
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
         StageProfileRun stageRun(stageSummary);
         stageRun.start(totalCommBytes(sock, sock2));
+        fpsi::stats::id_used_total.fetch_add(static_cast<uint64_t>(interIndices.size()) * 2, std::memory_order_relaxed);
 
         std::vector<block> ID_R(n);
         std::vector<block> ID_S(n);
@@ -621,12 +627,15 @@ void fuzzyPsi(const oc::CLP &cmd)
     const double otComm = stageSummary.getAverageCommMB("OT done");
 
     printSummaryLine("[ours]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
+    fpsi::stats::print_id_stats("fuzzyPsi");
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
 }
 
 void fuzzyPsiLp(const oc::CLP &cmd)
 {
+    fpsi::stats::reset_id_stats();
+
     u64 n = cmd.getOr("n", 1ull << cmd.getOr("nn", 10));
     size_t d = cmd.getOr("d", 2);
     int delta = cmd.getOr("delta", 2);
@@ -727,6 +736,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
         StageProfileRun stageRun(stageSummary);
         stageRun.start(totalCommBytes(sock, sock2));
+        fpsi::stats::id_used_total.fetch_add(static_cast<uint64_t>(interIndices.size()) * 2, std::memory_order_relaxed);
 
         std::vector<block> ID_R(n);
         std::vector<block> ID_S(n);
@@ -958,6 +968,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     } else {
         printSummaryLine("[ours]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
+    fpsi::stats::print_id_stats("fuzzyPsiLp");
 
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
