@@ -7,6 +7,8 @@
 #include <fmt/format.h>
 #include <iostream>
 #include <limits>
+#include <numeric>
+#include <unordered_set>
 #include <macoro/trace.h>
 #include <macoro/sync_wait.h>
 #include <macoro/thread_pool.h>
@@ -19,6 +21,7 @@
 #include "b2a.h"
 #include "eq.h"
 #include "id_stats.h"
+#include "prefilter_bench.h"
 #include "stage_profile.h"
 #include "secure-join/Prf/AltModPrf.h"
 #include "utils.h"
@@ -75,6 +78,74 @@ void printSummaryLine(
                      filterComm,
                      otComm)
               << std::endl;
+}
+
+std::string toLowerCopy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+template <typename T>
+std::vector<T> selectByIndex(const std::vector<T> &input, const std::vector<uint32_t> &indices)
+{
+    std::vector<T> output;
+    output.reserve(indices.size());
+    for (uint32_t index : indices) {
+        output.push_back(input[index]);
+    }
+    return output;
+}
+
+std::vector<std::vector<u64>> selectRowsByIndex(const std::vector<std::vector<u64>> &input, const std::vector<uint32_t> &indices)
+{
+    std::vector<std::vector<u64>> output;
+    output.reserve(indices.size());
+    for (uint32_t index : indices) {
+        output.push_back(input[index]);
+    }
+    return output;
+}
+
+struct BlockKey {
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+
+    bool operator==(const BlockKey &other) const = default;
+};
+
+struct BlockKeyHash {
+    size_t operator()(const BlockKey &value) const noexcept
+    {
+        const size_t loHash = std::hash<uint64_t> {}(value.lo);
+        const size_t hiHash = std::hash<uint64_t> {}(value.hi);
+        return loHash ^ (hiHash + 0x9e3779b97f4a7c15ULL + (loHash << 6) + (loHash >> 2));
+    }
+};
+
+BlockKey toBlockKey(const block &value)
+{
+    return { low(value), high(value) };
+}
+
+std::vector<block> collectDistinctBlocks(const std::vector<block> &values)
+{
+    std::vector<block> distinct;
+    distinct.reserve(values.size());
+
+    std::unordered_set<BlockKey, BlockKeyHash> seen;
+    seen.reserve(values.size());
+
+    for (const block &value : values) {
+        const BlockKey key = toBlockKey(value);
+        if (seen.insert(key).second) {
+            distinct.push_back(value);
+        }
+    }
+
+    return distinct;
 }
 
 } // namespace
@@ -627,6 +698,9 @@ void fuzzyPsi(const oc::CLP &cmd)
     const double otComm = stageSummary.getAverageCommMB("OT done");
 
     printSummaryLine("[ours]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
+    fpsi::stats::id_filtered_total.store(
+        fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     fpsi::stats::print_id_stats("fuzzyPsi");
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
@@ -646,6 +720,13 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
     u64 delta_p = std::pow(delta, lp);
     int prefixLen = static_cast<int>(std::ceil(std::log2(delta_p + 1)));
+    const std::string prefilterMode = toLowerCopy(cmd.getOr<std::string>("prefilter", ""));
+    const bool enableXorPrefilter = (prefilterMode == "xor");
+    const double prefilterFpr = cmd.getOr<double>("fpr", 1e-3);
+
+    if (!prefilterMode.empty() && !enableXorPrefilter) {
+        throw std::runtime_error("fuzzyPsiLp currently supports only -prefilter xor");
+    }
 
     std::vector<std::vector<u64>> sendSet;
     std::vector<block> sendPid;
@@ -694,6 +775,12 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         }
     }
 
+    std::unordered_set<uint64_t> trueIntersectionIndexSet;
+    trueIntersectionIndexSet.reserve(interIndices.size());
+    for (u64 idx : interIndices) {
+        trueIntersectionIndexSet.insert(static_cast<uint64_t>(idx));
+    }
+
     std::thread sendLocalMap([&] { LocalMap(sendSet, sendPid, sendListKey, sendListVal, delta); });
     std::thread recvLocalMap([&] { LocalMap(recvSet, recvPid, recvListKey, recvListVal, delta); });
 
@@ -732,6 +819,9 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     auto sock = coproto::AsioSocket::makePair();
     auto sock2 = coproto::AsioSocket::makePair();
     StageProfileSummary stageSummary;
+    uint64_t prefilterGeneratedAcc = 0;
+    uint64_t prefilterFilteredAcc = 0;
+    fpsi::stats::FilterAuditStats filterAuditTotals;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
         StageProfileRun stageRun(stageSummary);
@@ -756,75 +846,161 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         // std::cout << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB " <<
         // std::endl;
 
-        std::vector<u8> choiceBit(n, 0);
+        u64 workN = n;
+        std::vector<uint32_t> activeIndices(n);
+        std::iota(activeIndices.begin(), activeIndices.end(), 0);
+        std::vector<std::vector<u64>> filteredSendSet;
+        std::vector<std::vector<u64>> filteredRecvSet;
+        std::vector<block> filteredIdS;
+        std::vector<block> filteredIdR;
 
-        std::vector<u64> disR(n, 0);
-        std::vector<u64> disS(n, 0);
+        const std::vector<std::vector<u64>> *workSendSet = &sendSet;
+        const std::vector<std::vector<u64>> *workRecvSet = &recvSet;
+        const std::vector<block> *workIdS = &ID_S;
+        const std::vector<block> *workIdR = &ID_R;
+
+        if (enableXorPrefilter) {
+            const std::vector<block> distinctSenderIds = collectDistinctBlocks(ID_S);
+            const std::vector<block> distinctReceiverIds = collectDistinctBlocks(ID_R);
+            uint64_t receiverDistinctHits = 0;
+            std::vector<uint32_t> keptIndices;
+
+            std::thread sendPrefilter([&] {
+                const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
+                    fpsi::prefilter::PrefilterKind::Xor,
+                    ID_S,
+                    prefilterFpr);
+                const uint64_t filterBytes = serializedFilter.size();
+                coproto::sync_wait(sock[0].send(filterBytes));
+                coproto::sync_wait(sock[0].send(serializedFilter));
+                uint64_t keptCount = 0;
+                coproto::sync_wait(sock[0].recv(keptCount));
+                keptIndices.resize(keptCount);
+                if (keptCount != 0) {
+                    coproto::sync_wait(sock[0].recv(keptIndices));
+                }
+            });
+
+            std::thread recvPrefilter([&] {
+                uint64_t filterBytes = 0;
+                coproto::sync_wait(sock[1].recv(filterBytes));
+                std::vector<uint8_t> serializedFilter(filterBytes);
+                coproto::sync_wait(sock[1].recv(serializedFilter));
+
+                const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
+                    fpsi::prefilter::PrefilterKind::Xor,
+                    serializedFilter,
+                    distinctReceiverIds);
+                receiverDistinctHits = distinctHitIndices.size();
+
+                keptIndices = fpsi::prefilter::querySerializedPrefilter(
+                    fpsi::prefilter::PrefilterKind::Xor,
+                    serializedFilter,
+                    ID_R);
+                const uint64_t keptCount = keptIndices.size();
+                coproto::sync_wait(sock[1].send(keptCount));
+                if (keptCount != 0) {
+                    coproto::sync_wait(sock[1].send(keptIndices));
+                }
+            });
+
+            sendPrefilter.join();
+            recvPrefilter.join();
+
+            filteredSendSet = selectRowsByIndex(sendSet, keptIndices);
+            filteredRecvSet = selectRowsByIndex(recvSet, keptIndices);
+            filteredIdS = selectByIndex(ID_S, keptIndices);
+            filteredIdR = selectByIndex(ID_R, keptIndices);
+            activeIndices = selectByIndex(activeIndices, keptIndices);
+
+            workN = filteredIdR.size();
+            workSendSet = &filteredSendSet;
+            workRecvSet = &filteredRecvSet;
+            workIdS = &filteredIdS;
+            workIdR = &filteredIdR;
+
+            // These counters are reported in "both parties' IDs", so keep
+            // prefilter counts in the same unit as generated/used totals.
+            prefilterGeneratedAcc += static_cast<uint64_t>(n) * 2;
+            prefilterFilteredAcc += workN * 2;
+            fpsi::stats::id_generated_total.store(prefilterGeneratedAcc, std::memory_order_relaxed);
+            fpsi::stats::id_filtered_total.store(prefilterFilteredAcc, std::memory_order_relaxed);
+
+            filterAuditTotals.s_id_generated_distinct += distinctSenderIds.size();
+            filterAuditTotals.r_id_generated_distinct += distinctReceiverIds.size();
+            filterAuditTotals.true_intersection_estimate += static_cast<uint64_t>(interIndices.size());
+            filterAuditTotals.r_total_hits += receiverDistinctHits;
+            filterAuditTotals.r_filtered_useless_ids += static_cast<uint64_t>(distinctReceiverIds.size()) - receiverDistinctHits;
+            stageRun.mark("prefilter done", totalCommBytes(sock, sock2));
+        }
+
+        std::vector<u8> choiceBit(workN, 0);
+
+        std::vector<u64> disR(workN, 0);
+        std::vector<u64> disS(workN, 0);
 
         std::vector<block> prefixR;
         std::vector<block> prefixS;
 
         std::thread sendFilter([&] {
-            std::vector<block> inputs(n * d);
+            std::vector<block> inputs(workN * d);
 
-            for (int i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 for (int j = 0; j < d; j++) {
-                    inputs[i * d + j] = block(high(ID_S[i]) << 8, 0) ^ block(j, sendSet[i][j]); // 8 bits for dimension
+                    auto id = (*workIdS)[i];
+                    inputs[i * d + j] = block(high(id) << 8, 0) ^ block(j, (*workSendSet)[i][j]); // 8 bits for dimension
                 }
             }
 
-            SoOPPRFRecver recv(n * d, n * d * (2 * delta + 1), 1, false, &sock[0]);
+            SoOPPRFRecver recv(workN * d, workN * d * (2 * delta + 1), 1, false, &sock[0]);
 
-            std::vector<block> rand_S(n * d);
+            std::vector<block> rand_S(workN * d);
 
             recv.OPPRF(inputs, rand_S);
 
-            std::vector<u64> rand_S_A(n * d);
+            std::vector<u64> rand_S_A(workN * d);
 
             oc::Timer localTime;
 
             auto s = localTime.setTimePoint("b2a start");
 
-            B2aSender b2aSender(n * d, &sock[0]);
+            B2aSender b2aSender(workN * d, &sock[0]);
             b2aSender.b2a(rand_S, rand_S_A);
 
             auto e = localTime.setTimePoint("b2a done");
 
-            auto dt = std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000);
-
-            // std::cout << "b2a time: " << dt << " ms" << std::endl;
-
-            for (u64 i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 for (u64 j = 0; j < d; j++) {
                     disS[i] += rand_S_A[i * d + j];
                 }
             }
 
-            for (u64 i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 auto pre = getIntervalPrefix(0ULL - disS[i], delta_p - disS[i]);
                 for (auto &p : pre) {
                     p = p ^ block(i << 32, 0);
                     prefixS.push_back(p);
                 }
             }
-            while (prefixS.size() < (n * prefixLen)) {
+            while (prefixS.size() < (workN * prefixLen)) {
                 prefixS.push_back(prng.get<block>());
             }
 
-            PEqTSender eqSend(n * prefixLen, 1, false, &sock[0]);
+            PEqTSender eqSend(workN * prefixLen, 1, false, &sock[0]);
 
             eqSend.eq(prefixS);
         });
 
         std::thread recvFilter([&] {
-            std::vector<block> filterKey(n * d * (2 * delta + 1));
-            std::vector<block> filterVal(n * d * (2 * delta + 1));
+            std::vector<block> filterKey(workN * d * (2 * delta + 1));
+            std::vector<block> filterVal(workN * d * (2 * delta + 1));
             u64 idx = 0;
 
-            for (int i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 for (int j = 0; j < d; j++) {
                     for (int t = -delta; t <= delta; t++) {
-                        block key = block(high(ID_R[i]) << 8, 0) ^ block(j, recvSet[i][j] + t);
+                        auto id = (*workIdR)[i];
+                        block key = block(high(id) << 8, 0) ^ block(j, (*workRecvSet)[i][j] + t);
                         block val = block(0, std::pow(std::abs(t), lp));
                         filterKey[idx] = key;
                         filterVal[idx] = val;
@@ -833,24 +1009,24 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 }
             }
 
-            SoOPPRFSender send(n * d, n * d * (2 * delta + 1), 1, false, &sock[1]);
+            SoOPPRFSender send(workN * d, workN * d * (2 * delta + 1), 1, false, &sock[1]);
 
-            std::vector<block> rand_R(n * d);
+            std::vector<block> rand_R(workN * d);
 
             send.OPPRF(filterKey, filterVal, rand_R);
 
-            std::vector<u64> rand_R_A(n * d);
+            std::vector<u64> rand_R_A(workN * d);
 
-            B2aRecver b2aRecver(n * d, &sock[1]);
+            B2aRecver b2aRecver(workN * d, &sock[1]);
             b2aRecver.b2a(rand_R, rand_R_A);
 
-            for (u64 i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 for (u64 j = 0; j < d; j++) {
                     disR[i] += rand_R_A[i * d + j];
                 }
             }
 
-            for (u64 i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 auto pre = getPrefix(disR[i], prefixLen);
                 for (auto &p : pre) {
                     p = p ^ block(i << 32, 0);
@@ -858,7 +1034,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 }
             }
 
-            PEqTRecver eqRecv(n * prefixLen, 1, false, &sock[1]);
+            PEqTRecver eqRecv(workN * prefixLen, 1, false, &sock[1]);
 
             std::vector<u64> intersection;
 
@@ -879,23 +1055,23 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         std::thread sendOT([&] {
             SilentOtExtSender send;
-            send.configure(n, 128);
+            send.configure(workN, 128);
             send.mMultType = type;
 
             coproto::sync_wait(send.genSilentBaseOts(prng, sock[0]));
 
-            std::vector<std::array<block, 2>> messages(n);
+            std::vector<std::array<block, 2>> messages(workN);
 
             coproto::sync_wait(send.send(messages, prng, sock[0]));
 
-            std::vector<block> correctMessages(n * d / 2 * 2);
+            std::vector<block> correctMessages(workN * d / 2 * 2);
             PRNG prng0, prng1;
-            for (int i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 prng0.SetSeed(messages[i][0]);
                 prng1.SetSeed(messages[i][1]);
                 for (int j = 0; j < d / 2; j++) {
                     correctMessages[i * d + j * 2] = prng0.get<block>();
-                    correctMessages[i * d + j * 2 + 1] = block(sendSet[i][j * 2], sendSet[i][j * 2 + 1]) ^ prng0.get<block>();
+                    correctMessages[i * d + j * 2 + 1] = block((*workSendSet)[i][j * 2], (*workSendSet)[i][j * 2 + 1]) ^ prng0.get<block>();
                 }
             }
             coproto::sync_wait(sock[0].send(correctMessages));
@@ -905,21 +1081,21 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         std::thread recvOT([&] {
             SilentOtExtReceiver recv;
-            recv.configure(n, 128);
+            recv.configure(workN, 128);
             recv.mMultType = type;
 
             coproto::sync_wait(recv.genSilentBaseOts(prng, sock[1]));
 
-            std::vector<block> messages(n);
+            std::vector<block> messages(workN);
             BitVector choices(choiceBit.data(), choiceBit.size());
 
             coproto::sync_wait(recv.receive(choices, messages, prng, sock[1]));
 
-            std::vector<block> correctMessages(n * d / 2 * 2);
+            std::vector<block> correctMessages(workN * d / 2 * 2);
             coproto::sync_wait(sock[1].recv(correctMessages));
 
             PRNG prng;
-            for (int i = 0; i < n; i++) {
+            for (u64 i = 0; i < workN; i++) {
                 if (choiceBit[i]) {
                     prng.SetSeed(messages[i]);
                     std::vector<block> element;
@@ -936,12 +1112,30 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         recvOT.join();
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
+        if (enableXorPrefilter) {
+            std::vector<block> trueMatchedReceiverIds;
+            trueMatchedReceiverIds.reserve(choiceBit.size());
+
+            for (u64 i = 0; i < workN; ++i) {
+                if (!choiceBit[i]) {
+                    continue;
+                }
+
+                const uint64_t originalIndex = static_cast<uint64_t>(activeIndices[i]);
+                if (trueIntersectionIndexSet.contains(originalIndex)) {
+                    trueMatchedReceiverIds.push_back((*workIdR)[i]);
+                }
+            }
+
+            filterAuditTotals.true_intersection_count += collectDistinctBlocks(trueMatchedReceiverIds).size();
+        }
+
         if (verbose) {
             for (int i = 0; i < choiceBit.size(); i++) {
                 if (choiceBit[i]) {
-                    std::cout << "intersection at index " << i << std::endl;
+                    std::cout << "intersection at index " << activeIndices[i] << std::endl;
                 }
-                if (choiceBit[i] && std::find(interIndices.begin(), interIndices.end(), i) == interIndices.end()) {
+                if (choiceBit[i] && !trueIntersectionIndexSet.contains(static_cast<uint64_t>(activeIndices[i]))) {
                     throw runtime_error("false positive in fuzzyPsi");
                 }
             }
@@ -968,7 +1162,14 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     } else {
         printSummaryLine("[ours]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
-    fpsi::stats::print_id_stats("fuzzyPsiLp");
+    if (enableXorPrefilter) {
+        fpsi::stats::print_filter_audit_stats("fpsiFilterLp", filterAuditTotals);
+    } else {
+        fpsi::stats::id_filtered_total.store(
+            fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        fpsi::stats::print_id_stats("fuzzyPsiLp");
+    }
 
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //   << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;

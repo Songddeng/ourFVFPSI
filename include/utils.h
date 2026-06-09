@@ -15,14 +15,14 @@ using namespace osuCrypto;
 
 std::tuple<std::vector<std::vector<u64>>, std::vector<std::vector<u64>>> genInputs(u64 n, u64 d);
 
-inline u64 low(oc::block &blk)
+inline u64 low(const oc::block &blk)
 {
     u64 low64 = _mm_extract_epi64(blk, 0);
 
     return low64;
 }
 
-inline u64 high(oc::block &blk)
+inline u64 high(const oc::block &blk)
 {
     u64 high64 = _mm_extract_epi64(blk, 1);
 

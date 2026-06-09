@@ -84,3 +84,21 @@ if(FPSI_ENABLE_SECURE_CMP_EXAMPLE)
     target_compile_options(test_secure_cmp PRIVATE -mpclmul -maes -msse2 -msse4.1)
   endif()
 endif()
+
+add_executable(test_prefilter_bench
+  tests/test_prefilter_bench.cpp
+  src/prefilter_bench.cpp
+)
+target_link_libraries(test_prefilter_bench PRIVATE oc::cryptoTools)
+
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+  target_compile_options(test_prefilter_bench PRIVATE -mpclmul -maes -msse2 -msse4.1)
+endif()
+
+add_executable(test_id_stats
+  tests/test_id_stats.cpp
+)
+
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+  target_compile_options(test_id_stats PRIVATE -mpclmul -maes -msse2 -msse4.1)
+endif()

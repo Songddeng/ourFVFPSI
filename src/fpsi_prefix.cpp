@@ -739,6 +739,9 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
     const double otComm = stageSummary.getAverageCommMB("OT done");
 
     printSummaryLine("[ours-prefix]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
+    fpsi::stats::id_filtered_total.store(
+        fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     fpsi::stats::print_id_stats("fuzzyPsiPrefix");
 
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
@@ -1293,6 +1296,9 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
     } else {
         printSummaryLine("[ours-prefix]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
+    fpsi::stats::id_filtered_total.store(
+        fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     fpsi::stats::print_id_stats("fuzzyPsiLpPrefix");
     // std::cout << "comm: " << (sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent()) / 1024.0 / 1024.0 << " MB, "
     //           << " time: " << std::chrono::duration_cast<std::chrono::microseconds>(e - s).count() / double(1000 * 1000) << " s" << std::endl;
