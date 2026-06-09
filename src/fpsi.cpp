@@ -35,6 +35,24 @@ uint64_t totalCommBytes(std::array<coproto::AsioSocket, 2> &sock, std::array<cop
     return sock[0].bytesReceived() + sock[0].bytesSent() + sock2[0].bytesReceived() + sock2[0].bytesSent();
 }
 
+double normalizeIntersectionRatioPercent(double ratioPercent)
+{
+    if (ratioPercent <= 0.0) {
+        throw std::runtime_error("in_ratio must be positive");
+    }
+    if (ratioPercent > 100.0) {
+        return 1.0;
+    }
+    return ratioPercent / 100.0;
+}
+
+u64 bufferedOkvsTargetCount(u64 totalCount, double ratioFraction, double bufferFactor = 1.2)
+{
+    const double rawTarget = std::ceil(static_cast<double>(totalCount) * ratioFraction);
+    const double bufferedTarget = std::ceil(rawTarget * bufferFactor);
+    return std::max<u64>(1, static_cast<u64>(bufferedTarget));
+}
+
 u64 gridIndex(u64 value, int delta)
 {
     if (delta <= 0) {
@@ -718,6 +736,8 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     int verbose = cmd.getOr("v", 0);
     int numTry = cmd.getOr("try", 1);
     const bool safeFilter = cmd.getOr<int>("safe_filter", cmd.getOr<int>("sf", 0)) != 0;
+    const double intersectionRatioPercent = cmd.getOr<double>("in_ratio", 100.0);
+    const double intersectionRatioFraction = normalizeIntersectionRatioPercent(intersectionRatioPercent);
 
     u64 delta_p = std::pow(delta, lp);
     int prefixLen = static_cast<int>(std::ceil(std::log2(delta_p + 1)));
@@ -855,6 +875,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         std::vector<block> filteredIdS;
         std::vector<block> filteredIdR;
         std::vector<uint8_t> receiverPrefilterHitMask(n, 1);
+        u64 dynamicFilterNumKv = workN * d * (2 * delta + 1);
 
         const std::vector<std::vector<u64>> *workSendSet = &sendSet;
         const std::vector<std::vector<u64>> *workRecvSet = &recvSet;
@@ -907,6 +928,30 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
                 sendPrefilter.join();
                 recvPrefilter.join();
+
+                const u64 totalFilterKv = workN * d * (2 * delta + 1);
+                const u64 cappedCandidateIds = std::min<u64>(
+                    receiverKeptIndices.size(),
+                    std::max<u64>(1, static_cast<u64>(std::ceil(static_cast<double>(workN) * intersectionRatioFraction))));
+                const u64 cappedCandidateKv = cappedCandidateIds * d * (2 * delta + 1);
+                dynamicFilterNumKv = bufferedOkvsTargetCount(totalFilterKv, intersectionRatioFraction);
+                dynamicFilterNumKv = std::max<u64>(dynamicFilterNumKv, cappedCandidateKv);
+                dynamicFilterNumKv = std::min<u64>(dynamicFilterNumKv, totalFilterKv);
+
+                if (receiverKeptIndices.size() > cappedCandidateIds) {
+                    std::cerr << "[safe_filter] warning: hit candidates " << receiverKeptIndices.size()
+                              << " exceed configured in_ratio cap " << cappedCandidateIds
+                              << ", truncating encoded candidates to cap" << std::endl;
+                    u64 kept = 0;
+                    std::fill(receiverPrefilterHitMask.begin(), receiverPrefilterHitMask.end(), 0);
+                    for (uint32_t index : receiverKeptIndices) {
+                        if (kept >= cappedCandidateIds) {
+                            break;
+                        }
+                        receiverPrefilterHitMask[index] = 1;
+                        ++kept;
+                    }
+                }
             } else {
                 std::thread sendPrefilter([&] {
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
@@ -999,7 +1044,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_S(workN * d);
 
-            recv.OPPRF(inputs, rand_S);
+            recv.OPPRF(inputs, rand_S, safeFilter && enableXorPrefilter);
 
             std::vector<u64> rand_S_A(workN * d);
 
@@ -1060,7 +1105,11 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_R(workN * d);
 
-            send.OPPRF(filterKey, filterVal, rand_R);
+            if (safeFilter && enableXorPrefilter) {
+                send.OPPRF(filterKey, filterVal, rand_R, dynamicFilterNumKv);
+            } else {
+                send.OPPRF(filterKey, filterVal, rand_R);
+            }
 
             std::vector<u64> rand_R_A(workN * d);
 

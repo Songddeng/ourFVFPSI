@@ -10,6 +10,7 @@ public:
     ~SoOPPRFSender();
 
     void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &values, std::vector<oc::block> &y0);
+    void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &values, std::vector<oc::block> &y0, uint64_t dynamic_num_kv);
 
     void OPPRF(std::vector<oc::block> encoding, std::vector<oc::block> &y0);
 
@@ -25,6 +26,7 @@ public:
     ~SoOPPRFRecver();
 
     void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1);
+    void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1, bool dynamic_mode);
 
 private:
     OKVS *okvs;
