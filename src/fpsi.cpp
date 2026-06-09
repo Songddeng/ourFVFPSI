@@ -717,6 +717,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     int interSize = cmd.getOr("nn", 4);
     int verbose = cmd.getOr("v", 0);
     int numTry = cmd.getOr("try", 1);
+    const bool safeFilter = cmd.getOr<int>("safe_filter", cmd.getOr<int>("sf", 0)) != 0;
 
     u64 delta_p = std::pow(delta, lp);
     int prefixLen = static_cast<int>(std::ceil(std::log2(delta_p + 1)));
@@ -853,6 +854,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         std::vector<std::vector<u64>> filteredRecvSet;
         std::vector<block> filteredIdS;
         std::vector<block> filteredIdR;
+        std::vector<uint8_t> receiverPrefilterHitMask(n, 1);
 
         const std::vector<std::vector<u64>> *workSendSet = &sendSet;
         const std::vector<std::vector<u64>> *workRecvSet = &recvSet;
@@ -863,66 +865,107 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             const std::vector<block> distinctSenderIds = collectDistinctBlocks(ID_S);
             const std::vector<block> distinctReceiverIds = collectDistinctBlocks(ID_R);
             uint64_t receiverDistinctHits = 0;
-            std::vector<uint32_t> keptIndices;
+            std::vector<uint32_t> receiverKeptIndices;
+            std::vector<uint32_t> senderKeptIndices;
 
-            std::thread sendPrefilter([&] {
-                const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
-                    fpsi::prefilter::PrefilterKind::Xor,
-                    ID_S,
-                    prefilterFpr);
-                const uint64_t filterBytes = serializedFilter.size();
-                coproto::sync_wait(sock[0].send(filterBytes));
-                coproto::sync_wait(sock[0].send(serializedFilter));
-                uint64_t keptCount = 0;
-                coproto::sync_wait(sock[0].recv(keptCount));
-                keptIndices.resize(keptCount);
-                if (keptCount != 0) {
-                    coproto::sync_wait(sock[0].recv(keptIndices));
-                }
-            });
+            if (safeFilter) {
+                std::thread sendPrefilter([&] {
+                    const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        ID_S,
+                        prefilterFpr);
+                    const uint64_t filterBytes = serializedFilter.size();
+                    coproto::sync_wait(sock[0].send(filterBytes));
+                    coproto::sync_wait(sock[0].send(serializedFilter));
+                });
 
-            std::thread recvPrefilter([&] {
-                uint64_t filterBytes = 0;
-                coproto::sync_wait(sock[1].recv(filterBytes));
-                std::vector<uint8_t> serializedFilter(filterBytes);
-                coproto::sync_wait(sock[1].recv(serializedFilter));
+                std::thread recvPrefilter([&] {
+                    uint64_t filterBytes = 0;
+                    coproto::sync_wait(sock[1].recv(filterBytes));
+                    std::vector<uint8_t> serializedFilter(filterBytes);
+                    coproto::sync_wait(sock[1].recv(serializedFilter));
 
-                const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
-                    fpsi::prefilter::PrefilterKind::Xor,
-                    serializedFilter,
-                    distinctReceiverIds);
-                receiverDistinctHits = distinctHitIndices.size();
+                    const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        serializedFilter,
+                        distinctReceiverIds);
+                    receiverDistinctHits = distinctHitIndices.size();
 
-                keptIndices = fpsi::prefilter::querySerializedPrefilter(
-                    fpsi::prefilter::PrefilterKind::Xor,
-                    serializedFilter,
-                    ID_R);
-                const uint64_t keptCount = keptIndices.size();
-                coproto::sync_wait(sock[1].send(keptCount));
-                if (keptCount != 0) {
-                    coproto::sync_wait(sock[1].send(keptIndices));
-                }
-            });
+                    receiverKeptIndices = fpsi::prefilter::querySerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        serializedFilter,
+                        ID_R);
+                    for (uint32_t index : receiverKeptIndices) {
+                        receiverPrefilterHitMask[index] = 1;
+                    }
+                    for (u64 i = 0; i < n; ++i) {
+                        if (std::find(receiverKeptIndices.begin(), receiverKeptIndices.end(), static_cast<uint32_t>(i)) == receiverKeptIndices.end()) {
+                            receiverPrefilterHitMask[i] = 0;
+                        }
+                    }
+                });
 
-            sendPrefilter.join();
-            recvPrefilter.join();
+                sendPrefilter.join();
+                recvPrefilter.join();
+            } else {
+                std::thread sendPrefilter([&] {
+                    const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        ID_S,
+                        prefilterFpr);
+                    const uint64_t filterBytes = serializedFilter.size();
+                    coproto::sync_wait(sock[0].send(filterBytes));
+                    coproto::sync_wait(sock[0].send(serializedFilter));
+                    uint64_t keptCount = 0;
+                    coproto::sync_wait(sock[0].recv(keptCount));
+                    senderKeptIndices.resize(keptCount);
+                    if (keptCount != 0) {
+                        coproto::sync_wait(sock[0].recv(senderKeptIndices));
+                    }
+                });
 
-            filteredSendSet = selectRowsByIndex(sendSet, keptIndices);
-            filteredRecvSet = selectRowsByIndex(recvSet, keptIndices);
-            filteredIdS = selectByIndex(ID_S, keptIndices);
-            filteredIdR = selectByIndex(ID_R, keptIndices);
-            activeIndices = selectByIndex(activeIndices, keptIndices);
+                std::thread recvPrefilter([&] {
+                    uint64_t filterBytes = 0;
+                    coproto::sync_wait(sock[1].recv(filterBytes));
+                    std::vector<uint8_t> serializedFilter(filterBytes);
+                    coproto::sync_wait(sock[1].recv(serializedFilter));
 
-            workN = filteredIdR.size();
-            workSendSet = &filteredSendSet;
-            workRecvSet = &filteredRecvSet;
-            workIdS = &filteredIdS;
-            workIdR = &filteredIdR;
+                    const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        serializedFilter,
+                        distinctReceiverIds);
+                    receiverDistinctHits = distinctHitIndices.size();
+
+                    receiverKeptIndices = fpsi::prefilter::querySerializedPrefilter(
+                        fpsi::prefilter::PrefilterKind::Xor,
+                        serializedFilter,
+                        ID_R);
+                    const uint64_t keptCount = receiverKeptIndices.size();
+                    coproto::sync_wait(sock[1].send(keptCount));
+                    if (keptCount != 0) {
+                        coproto::sync_wait(sock[1].send(receiverKeptIndices));
+                    }
+                });
+
+                sendPrefilter.join();
+                recvPrefilter.join();
+                filteredSendSet = selectRowsByIndex(sendSet, senderKeptIndices);
+                filteredRecvSet = selectRowsByIndex(recvSet, receiverKeptIndices);
+                filteredIdS = selectByIndex(ID_S, senderKeptIndices);
+                filteredIdR = selectByIndex(ID_R, receiverKeptIndices);
+                activeIndices = selectByIndex(activeIndices, senderKeptIndices);
+
+                workN = filteredIdR.size();
+                workSendSet = &filteredSendSet;
+                workRecvSet = &filteredRecvSet;
+                workIdS = &filteredIdS;
+                workIdR = &filteredIdR;
+            }
 
             // These counters are reported in "both parties' IDs", so keep
             // prefilter counts in the same unit as generated/used totals.
             prefilterGeneratedAcc += static_cast<uint64_t>(n) * 2;
-            prefilterFilteredAcc += workN * 2;
+            prefilterFilteredAcc += (safeFilter ? static_cast<uint64_t>(n) * 2 : workN * 2);
             fpsi::stats::id_generated_total.store(prefilterGeneratedAcc, std::memory_order_relaxed);
             fpsi::stats::id_filtered_total.store(prefilterFilteredAcc, std::memory_order_relaxed);
 
@@ -992,19 +1035,23 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         });
 
         std::thread recvFilter([&] {
-            std::vector<block> filterKey(workN * d * (2 * delta + 1));
-            std::vector<block> filterVal(workN * d * (2 * delta + 1));
-            u64 idx = 0;
+            std::vector<block> filterKey;
+            std::vector<block> filterVal;
+            filterKey.reserve(workN * d * (2 * delta + 1));
+            filterVal.reserve(workN * d * (2 * delta + 1));
 
             for (u64 i = 0; i < workN; i++) {
+                if (safeFilter && enableXorPrefilter && receiverPrefilterHitMask[i] == 0) {
+                    continue;
+                }
+
                 for (int j = 0; j < d; j++) {
                     for (int t = -delta; t <= delta; t++) {
                         auto id = (*workIdR)[i];
                         block key = block(high(id) << 8, 0) ^ block(j, (*workRecvSet)[i][j] + t);
                         block val = block(0, std::pow(std::abs(t), lp));
-                        filterKey[idx] = key;
-                        filterVal[idx] = val;
-                        idx++;
+                        filterKey.push_back(key);
+                        filterVal.push_back(val);
                     }
                 }
             }
