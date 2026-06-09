@@ -77,19 +77,19 @@ namespace fpsi::stats
         const auto oldPrecision = std::cout.precision();
 
         std::cout << "[id-stats] " << label << std::endl;
-        std::cout << "  FMap_Distinct_Stats: S_Generated = " << stats.s_id_generated_distinct
-                  << " | R_Generated = " << stats.r_id_generated_distinct << std::endl;
+        // std::cout << "  FMap_Distinct_Stats: S_Generated = " << stats.s_id_generated_distinct
+        //           << " | R_Generated = " << stats.r_id_generated_distinct << std::endl;
         std::cout << "  Intersection_Context: True_Intersection_Estimate = "
                   << stats.true_intersection_estimate << std::endl;
         std::cout << "  Filter_Execution_Result: R_Total_Hits = " << stats.r_total_hits
                   << " | R_Blocked_Useless = " << stats.r_filtered_useless_ids << std::endl;
-        std::cout << std::fixed << std::setprecision(3);
-        std::cout << "  Filter_Efficiency_Rate: (R_Blocked_Useless / R_Generated) = "
-                  << invalidationRate << " (" << (invalidationRate * 100.0) << "%)" << std::endl;
-        std::cout << "  Truth_Intersection_Result: id_used_total = "
-                  << stats.true_intersection_count << std::endl;
-        std::cout << "  Hit_Set_Redundancy_Rate: (R_Total_Hits - id_used_total) / R_Total_Hits = "
-                  << hitSetRedundancyRate << " (" << (hitSetRedundancyRate * 100.0) << "%)" << std::endl;
+        // std::cout << std::fixed << std::setprecision(3);
+        // std::cout << "  Filter_Efficiency_Rate: (R_Blocked_Useless / R_Generated) = "
+        //           << invalidationRate << " (" << (invalidationRate * 100.0) << "%)" << std::endl;
+        // std::cout << "  Truth_Intersection_Result: id_used_total = "
+        //           << stats.true_intersection_count << std::endl;
+        // std::cout << "  Hit_Set_Redundancy_Rate: (R_Total_Hits - id_used_total) / R_Total_Hits = "
+        //           << hitSetRedundancyRate << " (" << (hitSetRedundancyRate * 100.0) << "%)" << std::endl;
 
         std::cout.flags(oldFlags);
         std::cout.precision(oldPrecision);

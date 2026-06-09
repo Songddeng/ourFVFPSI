@@ -106,6 +106,51 @@ std::string toLowerCopy(std::string value)
     return value;
 }
 
+enum class IntersectionRevealMode {
+    Mutual,
+    ReceiverOnly,
+};
+
+const char *intersectionRevealModeName(IntersectionRevealMode mode)
+{
+    switch (mode) {
+    case IntersectionRevealMode::Mutual:
+        return "mutual";
+    case IntersectionRevealMode::ReceiverOnly:
+        return "receiver_only";
+    }
+    throw std::runtime_error("unknown intersection reveal mode");
+}
+
+IntersectionRevealMode parseIntersectionRevealMode(const oc::CLP &cmd)
+{
+    if (cmd.isSet("reveal_mode")) {
+        const std::string revealMode = toLowerCopy(cmd.get<std::string>("reveal_mode"));
+        if (revealMode == "0" || revealMode == "mutual" || revealMode == "symmetric" || revealMode == "mutual_psi") {
+            return IntersectionRevealMode::Mutual;
+        }
+        if (revealMode == "1" || revealMode == "receiver_only" || revealMode == "traditional" || revealMode == "traditional_psi") {
+            return IntersectionRevealMode::ReceiverOnly;
+        }
+
+        throw std::runtime_error("unsupported -reveal_mode; use mutual|receiver_only (or 0|1)");
+    }
+
+    if (!cmd.isSet("safe_filter") && !cmd.isSet("sf")) {
+        return IntersectionRevealMode::ReceiverOnly;
+    }
+
+    const int legacySf = cmd.getOr<int>("safe_filter", cmd.getOr<int>("sf", 1));
+    if (legacySf == 0) {
+        return IntersectionRevealMode::Mutual;
+    }
+    if (legacySf == 1) {
+        return IntersectionRevealMode::ReceiverOnly;
+    }
+
+    throw std::runtime_error("legacy -sf must be 0 or 1");
+}
+
 template <typename T>
 std::vector<T> selectByIndex(const std::vector<T> &input, const std::vector<uint32_t> &indices)
 {
@@ -735,7 +780,9 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     int interSize = cmd.getOr("nn", 4);
     int verbose = cmd.getOr("v", 0);
     int numTry = cmd.getOr("try", 1);
-    const bool safeFilter = cmd.getOr<int>("safe_filter", cmd.getOr<int>("sf", 0)) != 0;
+    const IntersectionRevealMode revealMode = parseIntersectionRevealMode(cmd);
+    const bool mutualReveal = revealMode == IntersectionRevealMode::Mutual;
+    const bool receiverOnlyReveal = revealMode == IntersectionRevealMode::ReceiverOnly;
     const double intersectionRatioPercent = cmd.getOr<double>("in_ratio", 100.0);
     const double intersectionRatioFraction = normalizeIntersectionRatioPercent(intersectionRatioPercent);
 
@@ -747,6 +794,9 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
     if (!prefilterMode.empty() && !enableXorPrefilter) {
         throw std::runtime_error("fuzzyPsiLp currently supports only -prefilter xor");
+    }
+    if (mutualReveal && !enableXorPrefilter) {
+        throw std::runtime_error("mutual reveal mode requires -prefilter xor");
     }
 
     std::vector<std::vector<u64>> sendSet;
@@ -889,7 +939,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             std::vector<uint32_t> receiverKeptIndices;
             std::vector<uint32_t> senderKeptIndices;
 
-            if (safeFilter) {
+            if (receiverOnlyReveal) {
                 std::thread sendPrefilter([&] {
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
                         fpsi::prefilter::PrefilterKind::Xor,
@@ -939,7 +989,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 dynamicFilterNumKv = std::min<u64>(dynamicFilterNumKv, totalFilterKv);
 
                 if (receiverKeptIndices.size() > cappedCandidateIds) {
-                    std::cerr << "[safe_filter] warning: hit candidates " << receiverKeptIndices.size()
+                    std::cerr << "[receiver_only] warning: hit candidates " << receiverKeptIndices.size()
                               << " exceed configured in_ratio cap " << cappedCandidateIds
                               << ", truncating encoded candidates to cap" << std::endl;
                     u64 kept = 0;
@@ -1010,7 +1060,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             // These counters are reported in "both parties' IDs", so keep
             // prefilter counts in the same unit as generated/used totals.
             prefilterGeneratedAcc += static_cast<uint64_t>(n) * 2;
-            prefilterFilteredAcc += (safeFilter ? static_cast<uint64_t>(n) * 2 : workN * 2);
+            prefilterFilteredAcc += (receiverOnlyReveal ? static_cast<uint64_t>(n) * 2 : workN * 2);
             fpsi::stats::id_generated_total.store(prefilterGeneratedAcc, std::memory_order_relaxed);
             fpsi::stats::id_filtered_total.store(prefilterFilteredAcc, std::memory_order_relaxed);
 
@@ -1029,6 +1079,10 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         std::vector<block> prefixR;
         std::vector<block> prefixS;
+        uint64_t filterOprfCommBytes = 0;
+        uint64_t filterOkvsCommBytes = 0;
+        uint64_t filterB2aCommBytes = 0;
+        uint64_t filterPeqtCommBytes = 0;
 
         std::thread sendFilter([&] {
             std::vector<block> inputs(workN * d);
@@ -1043,8 +1097,10 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             SoOPPRFRecver recv(workN * d, workN * d * (2 * delta + 1), 1, false, &sock[0]);
 
             std::vector<block> rand_S(workN * d);
-
-            recv.OPPRF(inputs, rand_S, safeFilter && enableXorPrefilter);
+            SoOPPRFCommStats soOpprfStats;
+            recv.OPPRF(inputs, rand_S, receiverOnlyReveal && enableXorPrefilter, soOpprfStats);
+            filterOprfCommBytes = soOpprfStats.oprf_comm_bytes;
+            filterOkvsCommBytes = soOpprfStats.okvs_comm_bytes;
 
             std::vector<u64> rand_S_A(workN * d);
 
@@ -1053,7 +1109,10 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             auto s = localTime.setTimePoint("b2a start");
 
             B2aSender b2aSender(workN * d, &sock[0]);
+            const uint64_t b2aCommBefore = sock[0].bytesReceived() + sock[0].bytesSent();
             b2aSender.b2a(rand_S, rand_S_A);
+            const uint64_t b2aCommAfter = sock[0].bytesReceived() + sock[0].bytesSent();
+            filterB2aCommBytes = b2aCommAfter - b2aCommBefore;
 
             auto e = localTime.setTimePoint("b2a done");
 
@@ -1076,7 +1135,10 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             PEqTSender eqSend(workN * prefixLen, 1, false, &sock[0]);
 
+            const uint64_t peqtCommBefore = sock[0].bytesReceived() + sock[0].bytesSent();
             eqSend.eq(prefixS);
+            const uint64_t peqtCommAfter = sock[0].bytesReceived() + sock[0].bytesSent();
+            filterPeqtCommBytes = peqtCommAfter - peqtCommBefore;
         });
 
         std::thread recvFilter([&] {
@@ -1086,7 +1148,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             filterVal.reserve(workN * d * (2 * delta + 1));
 
             for (u64 i = 0; i < workN; i++) {
-                if (safeFilter && enableXorPrefilter && receiverPrefilterHitMask[i] == 0) {
+                if (receiverOnlyReveal && enableXorPrefilter && receiverPrefilterHitMask[i] == 0) {
                     continue;
                 }
 
@@ -1105,7 +1167,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_R(workN * d);
 
-            if (safeFilter && enableXorPrefilter) {
+            if (receiverOnlyReveal && enableXorPrefilter) {
                 send.OPPRF(filterKey, filterVal, rand_R, dynamicFilterNumKv);
             } else {
                 send.OPPRF(filterKey, filterVal, rand_R);
@@ -1206,6 +1268,38 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+
+        std::vector<uint32_t> senderRevealedIntersectionIndices;
+        if (mutualReveal) {
+            std::thread senderReveal([&] {
+                uint64_t count = 0;
+                coproto::sync_wait(sock[0].recv(count));
+                senderRevealedIntersectionIndices.resize(count);
+                if (count != 0) {
+                    coproto::sync_wait(sock[0].recv(senderRevealedIntersectionIndices));
+                }
+            });
+
+            std::thread receiverReveal([&] {
+                std::vector<uint32_t> receiverRevealedIntersectionIndices;
+                receiverRevealedIntersectionIndices.reserve(choiceBit.size());
+                for (u64 i = 0; i < workN; ++i) {
+                    if (choiceBit[i]) {
+                        receiverRevealedIntersectionIndices.push_back(activeIndices[i]);
+                    }
+                }
+
+                const uint64_t count = receiverRevealedIntersectionIndices.size();
+                coproto::sync_wait(sock[1].send(count));
+                if (count != 0) {
+                    coproto::sync_wait(sock[1].send(receiverRevealedIntersectionIndices));
+                }
+            });
+
+            senderReveal.join();
+            receiverReveal.join();
+        }
+
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (enableXorPrefilter) {
@@ -1233,6 +1327,12 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 }
                 if (choiceBit[i] && !trueIntersectionIndexSet.contains(static_cast<uint64_t>(activeIndices[i]))) {
                     throw runtime_error("false positive in fuzzyPsi");
+                }
+            }
+            if (mutualReveal) {
+                std::cout << "sender reveal mode: " << intersectionRevealModeName(revealMode) << std::endl;
+                for (uint32_t index : senderRevealedIntersectionIndices) {
+                    std::cout << "sender learns intersection at index " << index << std::endl;
                 }
             }
             std::cout << "All matches found!" << std::endl;

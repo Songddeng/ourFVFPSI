@@ -4,6 +4,11 @@
 #include "OKVS.h"
 #include "SoOPRF.h"
 
+struct SoOPPRFCommStats {
+    uint64_t oprf_comm_bytes = 0;
+    uint64_t okvs_comm_bytes = 0;
+};
+
 class SoOPPRFSender : public SoOPRFSender {
 public:
     SoOPPRFSender(uint64_t num_, uint64_t num_kv_, uint64_t numThreads_, bool useOle_, coproto::Socket *socket_);
@@ -27,6 +32,7 @@ public:
 
     void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1);
     void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1, bool dynamic_mode);
+    void OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1, bool dynamic_mode, SoOPPRFCommStats &stats);
 
 private:
     OKVS *okvs;

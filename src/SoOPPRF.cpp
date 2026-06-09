@@ -92,21 +92,50 @@ void SoOPPRFRecver::OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &
 
 void SoOPPRFRecver::OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1, bool dynamic_mode)
 {
+    SoOPPRFCommStats ignoredStats;
+    OPPRF(keys, y1, dynamic_mode, ignoredStats);
+}
+
+void SoOPPRFRecver::OPPRF(std::vector<oc::block> &keys, std::vector<oc::block> &y1, bool dynamic_mode, SoOPPRFCommStats &stats)
+{
     if (!dynamic_mode) {
-        OPPRF(keys, y1);
+        const uint64_t oprfCommBefore = socket->bytesReceived() + socket->bytesSent();
+        std::vector<oc::block> tmp(keys.size());
+
+        SoOPRFRecver::OPRF(keys, tmp);
+        const uint64_t oprfCommAfter = socket->bytesReceived() + socket->bytesSent();
+        stats.oprf_comm_bytes += (oprfCommAfter - oprfCommBefore);
+
+        std::vector<oc::block> encoding(okvs->size());
+        const uint64_t okvsCommBefore = socket->bytesReceived() + socket->bytesSent();
+        coproto::sync_wait(socket->recv(encoding));
+        const uint64_t okvsCommAfter = socket->bytesReceived() + socket->bytesSent();
+        stats.okvs_comm_bytes += (okvsCommAfter - okvsCommBefore);
+
+        auto d = okvs->decode(encoding, keys);
+
+        for (u64 i = 0; i < keys.size(); i++) {
+            y1[i] = d[i] ^ tmp[i];
+        }
         return;
     }
 
     std::vector<oc::block> tmp(keys.size());
 
+    const uint64_t oprfCommBefore = socket->bytesReceived() + socket->bytesSent();
     SoOPRFRecver::OPRF(keys, tmp);
+    const uint64_t oprfCommAfter = socket->bytesReceived() + socket->bytesSent();
+    stats.oprf_comm_bytes += (oprfCommAfter - oprfCommBefore);
 
+    const uint64_t okvsCommBefore = socket->bytesReceived() + socket->bytesSent();
     uint64_t dynamicNumKv = 0;
     coproto::sync_wait(socket->recv(dynamicNumKv));
     uint64_t encodingSize = 0;
     coproto::sync_wait(socket->recv(encodingSize));
     std::vector<oc::block> encoding(encodingSize);
     coproto::sync_wait(socket->recv(encoding));
+    const uint64_t okvsCommAfter = socket->bytesReceived() + socket->bytesSent();
+    stats.okvs_comm_bytes += (okvsCommAfter - okvsCommBefore);
 
     OKVS dynamicOkvs(dynamicNumKv);
     auto d = dynamicOkvs.decode(encoding, keys);
