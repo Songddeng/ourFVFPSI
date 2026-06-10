@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <unordered_map>
 #include <unordered_set>
 #include <macoro/trace.h>
 #include <macoro/sync_wait.h>
@@ -209,6 +210,48 @@ std::vector<block> collectDistinctBlocks(const std::vector<block> &values)
     }
 
     return distinct;
+}
+
+std::vector<uint32_t> selectIndicesForOrderedIdsWithRandomFallback(
+    const std::vector<block> &orderedCandidateIds,
+    const std::vector<block> &localIds,
+    PRNG &prng)
+{
+    if (localIds.empty()) {
+        throw std::runtime_error("cannot materialize sender candidate stream from empty local IDs");
+    }
+
+    std::unordered_map<BlockKey, std::vector<uint32_t>, BlockKeyHash> localBuckets;
+    localBuckets.reserve(localIds.size());
+    for (uint32_t i = 0; i < localIds.size(); ++i) {
+        localBuckets[toBlockKey(localIds[i])].push_back(i);
+    }
+
+    std::unordered_map<BlockKey, size_t, BlockKeyHash> bucketOffsets;
+    bucketOffsets.reserve(localBuckets.size());
+
+    std::vector<uint32_t> selectedIndices;
+    selectedIndices.reserve(orderedCandidateIds.size());
+
+    for (const block &id : orderedCandidateIds) {
+        const BlockKey key = toBlockKey(id);
+        auto bucketIt = localBuckets.find(key);
+        if (bucketIt == localBuckets.end()) {
+            selectedIndices.push_back(static_cast<uint32_t>(prng.get<u64>() % localIds.size()));
+            continue;
+        }
+
+        size_t &offset = bucketOffsets[key];
+        if (offset < bucketIt->second.size()) {
+            selectedIndices.push_back(bucketIt->second[offset]);
+            ++offset;
+            continue;
+        }
+
+        selectedIndices.push_back(static_cast<uint32_t>(prng.get<u64>() % localIds.size()));
+    }
+
+    return selectedIndices;
 }
 
 } // namespace
@@ -1003,7 +1046,9 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     }
                 }
             } else {
+                const block senderPrefilterDummySeed = prng.get<block>();
                 std::thread sendPrefilter([&] {
+                    PRNG localDummyPrng(senderPrefilterDummySeed);
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
                         fpsi::prefilter::PrefilterKind::Xor,
                         ID_S,
@@ -1011,12 +1056,18 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     const uint64_t filterBytes = serializedFilter.size();
                     coproto::sync_wait(sock[0].send(filterBytes));
                     coproto::sync_wait(sock[0].send(serializedFilter));
-                    uint64_t keptCount = 0;
-                    coproto::sync_wait(sock[0].recv(keptCount));
-                    senderKeptIndices.resize(keptCount);
-                    if (keptCount != 0) {
-                        coproto::sync_wait(sock[0].recv(senderKeptIndices));
+
+                    uint64_t candidateIdCount = 0;
+                    coproto::sync_wait(sock[0].recv(candidateIdCount));
+                    std::vector<block> receiverCandidateIds(candidateIdCount);
+                    if (candidateIdCount != 0) {
+                        coproto::sync_wait(sock[0].recv(receiverCandidateIds));
                     }
+
+                    senderKeptIndices = selectIndicesForOrderedIdsWithRandomFallback(
+                        receiverCandidateIds,
+                        ID_S,
+                        localDummyPrng);
                 });
 
                 std::thread recvPrefilter([&] {
@@ -1035,10 +1086,12 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                         fpsi::prefilter::PrefilterKind::Xor,
                         serializedFilter,
                         ID_R);
-                    const uint64_t keptCount = receiverKeptIndices.size();
-                    coproto::sync_wait(sock[1].send(keptCount));
-                    if (keptCount != 0) {
-                        coproto::sync_wait(sock[1].send(receiverKeptIndices));
+
+                    const std::vector<block> receiverCandidateIds = selectByIndex(ID_R, receiverKeptIndices);
+                    const uint64_t candidateIdCount = receiverCandidateIds.size();
+                    coproto::sync_wait(sock[1].send(candidateIdCount));
+                    if (candidateIdCount != 0) {
+                        coproto::sync_wait(sock[1].send(receiverCandidateIds));
                     }
                 });
 
@@ -1048,7 +1101,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 filteredRecvSet = selectRowsByIndex(recvSet, receiverKeptIndices);
                 filteredIdS = selectByIndex(ID_S, senderKeptIndices);
                 filteredIdR = selectByIndex(ID_R, receiverKeptIndices);
-                activeIndices = selectByIndex(activeIndices, senderKeptIndices);
+                activeIndices = selectByIndex(activeIndices, receiverKeptIndices);
 
                 workN = filteredIdR.size();
                 workSendSet = &filteredSendSet;
@@ -1269,30 +1322,30 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         sendOT.join();
         recvOT.join();
 
-        std::vector<uint32_t> senderRevealedIntersectionIndices;
+        std::vector<block> senderRevealedIntersectionIds;
         if (mutualReveal) {
             std::thread senderReveal([&] {
                 uint64_t count = 0;
                 coproto::sync_wait(sock[0].recv(count));
-                senderRevealedIntersectionIndices.resize(count);
+                senderRevealedIntersectionIds.resize(count);
                 if (count != 0) {
-                    coproto::sync_wait(sock[0].recv(senderRevealedIntersectionIndices));
+                    coproto::sync_wait(sock[0].recv(senderRevealedIntersectionIds));
                 }
             });
 
             std::thread receiverReveal([&] {
-                std::vector<uint32_t> receiverRevealedIntersectionIndices;
-                receiverRevealedIntersectionIndices.reserve(choiceBit.size());
+                std::vector<block> receiverRevealedIntersectionIds;
+                receiverRevealedIntersectionIds.reserve(choiceBit.size());
                 for (u64 i = 0; i < workN; ++i) {
                     if (choiceBit[i]) {
-                        receiverRevealedIntersectionIndices.push_back(activeIndices[i]);
+                        receiverRevealedIntersectionIds.push_back((*workIdR)[i]);
                     }
                 }
 
-                const uint64_t count = receiverRevealedIntersectionIndices.size();
+                const uint64_t count = receiverRevealedIntersectionIds.size();
                 coproto::sync_wait(sock[1].send(count));
                 if (count != 0) {
-                    coproto::sync_wait(sock[1].send(receiverRevealedIntersectionIndices));
+                    coproto::sync_wait(sock[1].send(receiverRevealedIntersectionIds));
                 }
             });
 
@@ -1331,8 +1384,8 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             }
             if (mutualReveal) {
                 std::cout << "sender reveal mode: " << intersectionRevealModeName(revealMode) << std::endl;
-                for (uint32_t index : senderRevealedIntersectionIndices) {
-                    std::cout << "sender learns intersection at index " << index << std::endl;
+                for (const block &id : senderRevealedIntersectionIds) {
+                    std::cout << "sender learns intersection ID " << id << std::endl;
                 }
             }
             std::cout << "All matches found!" << std::endl;

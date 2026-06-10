@@ -244,6 +244,118 @@ private:
     std::vector<uint64_t> words_;
 };
 
+class VirtualBloomFilter {
+public:
+    VirtualBloomFilter() = default;
+
+    VirtualBloomFilter(const std::vector<oc::block> &keys, double target_fpr)
+    {
+        const uint64_t item_count = std::max<uint64_t>(1, keys.size());
+        const double ln2 = std::log(2.0);
+        const double target_bits = -(static_cast<double>(item_count) * std::log(std::max(target_fpr, 1e-9))) / (ln2 * ln2);
+
+        constexpr uint64_t kTargetItemsPerVirtual = 64;
+        virtual_filter_count_ = std::max<uint32_t>(
+            1,
+            static_cast<uint32_t>((item_count + kTargetItemsPerVirtual - 1) / kTargetItemsPerVirtual));
+        bits_per_virtual_ = std::max<uint32_t>(
+            64,
+            static_cast<uint32_t>(std::ceil((target_bits * 1.10) / static_cast<double>(virtual_filter_count_))));
+
+        const double average_items_per_virtual =
+            static_cast<double>(item_count) / static_cast<double>(virtual_filter_count_);
+        num_hashes_ = std::max<uint8_t>(
+            1,
+            static_cast<uint8_t>(std::llround(
+                (static_cast<double>(bits_per_virtual_) / std::max(average_items_per_virtual, 1.0)) * ln2)));
+
+        const uint64_t total_bits = static_cast<uint64_t>(virtual_filter_count_) * bits_per_virtual_;
+        words_.assign((total_bits + 63) / 64, 0);
+
+        for (const auto &key : keys) {
+            add(key);
+        }
+    }
+
+    void add(const oc::block &key)
+    {
+        const uint32_t virtual_index = virtualIndexFor(key);
+        const uint64_t base = static_cast<uint64_t>(virtual_index) * bits_per_virtual_;
+        const uint64_t h1 = hashBlock(key, kHashSeed2);
+        const uint64_t h2 = hashBlock(key, kHashSeed3) | 1ULL;
+        for (uint8_t i = 0; i < num_hashes_; ++i) {
+            const uint64_t local_index = (h1 + static_cast<uint64_t>(i) * h2) % bits_per_virtual_;
+            const uint64_t bit_index = base + local_index;
+            words_[bit_index >> 6] |= (1ULL << (bit_index & 63));
+        }
+    }
+
+    bool contains(const oc::block &key) const
+    {
+        if (virtual_filter_count_ == 0 || bits_per_virtual_ == 0 || words_.empty()) {
+            return false;
+        }
+
+        const uint32_t virtual_index = virtualIndexFor(key);
+        const uint64_t base = static_cast<uint64_t>(virtual_index) * bits_per_virtual_;
+        const uint64_t h1 = hashBlock(key, kHashSeed2);
+        const uint64_t h2 = hashBlock(key, kHashSeed3) | 1ULL;
+        for (uint8_t i = 0; i < num_hashes_; ++i) {
+            const uint64_t local_index = (h1 + static_cast<uint64_t>(i) * h2) % bits_per_virtual_;
+            const uint64_t bit_index = base + local_index;
+            if ((words_[bit_index >> 6] & (1ULL << (bit_index & 63))) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::vector<uint8_t> serialize() const
+    {
+        std::vector<uint8_t> buffer;
+        buffer.reserve(
+            sizeof(virtual_filter_count_) +
+            sizeof(bits_per_virtual_) +
+            sizeof(num_hashes_) +
+            sizeof(uint64_t) +
+            words_.size() * sizeof(uint64_t));
+        appendScalar(buffer, virtual_filter_count_);
+        appendScalar(buffer, bits_per_virtual_);
+        appendScalar(buffer, num_hashes_);
+        appendScalar(buffer, static_cast<uint64_t>(words_.size()));
+        for (uint64_t word : words_) {
+            appendScalar(buffer, word);
+        }
+        return buffer;
+    }
+
+    static VirtualBloomFilter deserialize(const std::vector<uint8_t> &buffer)
+    {
+        size_t offset = 0;
+        VirtualBloomFilter filter;
+        filter.virtual_filter_count_ = readScalar<uint32_t>(buffer, offset);
+        filter.bits_per_virtual_ = readScalar<uint32_t>(buffer, offset);
+        filter.num_hashes_ = readScalar<uint8_t>(buffer, offset);
+        const uint64_t word_count = readScalar<uint64_t>(buffer, offset);
+        filter.words_.resize(word_count);
+        for (uint64_t &word : filter.words_) {
+            word = readScalar<uint64_t>(buffer, offset);
+        }
+        return filter;
+    }
+
+private:
+    uint32_t virtualIndexFor(const oc::block &key) const
+    {
+        return static_cast<uint32_t>(reduce64(hashBlock(key, kHashSeed0), virtual_filter_count_));
+    }
+
+    uint32_t virtual_filter_count_ = 0;
+    uint32_t bits_per_virtual_ = 0;
+    uint8_t num_hashes_ = 0;
+    std::vector<uint64_t> words_;
+};
+
 class CuckooFilter {
 public:
     CuckooFilter() = default;
@@ -639,6 +751,13 @@ PrefilterBenchResult runBenchCase(PrefilterKind kind, const PrefilterDataset &da
             target_fpr,
             [](const std::vector<oc::block> &sender_ids, double fpr) { return BloomFilter(sender_ids, fpr); },
             [](const std::vector<uint8_t> &serialized) { return BloomFilter::deserialize(serialized); });
+    case PrefilterKind::VirtualBloom:
+        return runBenchCase(
+            prefilterKindName(kind),
+            dataset,
+            target_fpr,
+            [](const std::vector<oc::block> &sender_ids, double fpr) { return VirtualBloomFilter(sender_ids, fpr); },
+            [](const std::vector<uint8_t> &serialized) { return VirtualBloomFilter::deserialize(serialized); });
     case PrefilterKind::Cuckoo:
         return runBenchCase(
             prefilterKindName(kind),
@@ -703,6 +822,8 @@ std::string prefilterKindName(PrefilterKind kind)
     switch (kind) {
     case PrefilterKind::Bloom:
         return "Bloom Filter";
+    case PrefilterKind::VirtualBloom:
+        return "Virtual Bloom Filter";
     case PrefilterKind::Cuckoo:
         return "Cuckoo Filter";
     case PrefilterKind::Xor:
@@ -716,10 +837,13 @@ std::vector<PrefilterKind> parsePrefilterSelection(const std::string &filter_arg
 {
     const std::string lowered = toLowerCopy(filter_arg);
     if (lowered.empty() || lowered == "all") {
-        return { PrefilterKind::Bloom, PrefilterKind::Cuckoo, PrefilterKind::Xor };
+        return { PrefilterKind::Bloom, PrefilterKind::VirtualBloom, PrefilterKind::Cuckoo, PrefilterKind::Xor };
     }
     if (lowered == "bloom") {
         return { PrefilterKind::Bloom };
+    }
+    if (lowered == "vbf" || lowered == "virtual" || lowered == "virtual_bloom" || lowered == "virtual-bloom") {
+        return { PrefilterKind::VirtualBloom };
     }
     if (lowered == "cuckoo") {
         return { PrefilterKind::Cuckoo };
@@ -728,7 +852,7 @@ std::vector<PrefilterKind> parsePrefilterSelection(const std::string &filter_arg
         return { PrefilterKind::Xor };
     }
 
-    throw std::runtime_error("invalid -filter value, expected bloom|cuckoo|xor|all");
+    throw std::runtime_error("invalid -filter value, expected bloom|vbf|cuckoo|xor|all");
 }
 
 PrefilterDataset generatePrefilterDataset(uint64_t receiver_candidate_count, uint64_t ground_truth, uint64_t seed)
@@ -783,6 +907,8 @@ std::vector<uint8_t> buildSerializedPrefilter(
     switch (kind) {
     case PrefilterKind::Bloom:
         return BloomFilter(sender_ids, target_fpr).serialize();
+    case PrefilterKind::VirtualBloom:
+        return VirtualBloomFilter(sender_ids, target_fpr).serialize();
     case PrefilterKind::Cuckoo:
         return CuckooFilter(sender_ids, target_fpr).serialize();
     case PrefilterKind::Xor:
@@ -811,6 +937,9 @@ std::vector<uint32_t> querySerializedPrefilter(
     switch (kind) {
     case PrefilterKind::Bloom:
         keep_if_match(BloomFilter::deserialize(serialized_filter));
+        return kept_indices;
+    case PrefilterKind::VirtualBloom:
+        keep_if_match(VirtualBloomFilter::deserialize(serialized_filter));
         return kept_indices;
     case PrefilterKind::Cuckoo:
         keep_if_match(CuckooFilter::deserialize(serialized_filter));
@@ -859,6 +988,13 @@ void printPrefilterBenchMarkdown(
     const std::vector<PrefilterBenchResult> &results,
     const PrefilterBenchConfig &config)
 {
+    const std::array<PrefilterKind, 4> display_kinds = {
+        PrefilterKind::Bloom,
+        PrefilterKind::VirtualBloom,
+        PrefilterKind::Cuckoo,
+        PrefilterKind::Xor
+    };
+
     auto findResult = [&](PrefilterKind kind) -> const PrefilterBenchResult * {
         const std::string name = prefilterKindName(kind);
         for (const auto &result : results) {
@@ -874,8 +1010,6 @@ void printPrefilterBenchMarkdown(
               << ", Try Count = " << std::max<uint64_t>(1, config.try_count)
               << ", Target FPR = " << config.target_fpr << std::endl;
     std::cout << std::endl;
-    std::cout << "| Metric | Bloom Filter | Cuckoo Filter | XOR Filter |" << std::endl;
-    std::cout << "|--------|--------------|---------------|------------|" << std::endl;
 
     auto cell = [&](PrefilterKind kind, const auto &formatter) {
         const PrefilterBenchResult *result = findResult(kind);
@@ -885,45 +1019,39 @@ void printPrefilterBenchMarkdown(
         return formatter(*result);
     };
 
-    std::cout << "| Build Time |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatTime(r.build_time_us); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatTime(r.build_time_us); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatTime(r.build_time_us); }) << " |" << std::endl;
-    std::cout << "| Serialized Size |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatBytes(r.serialized_size_bytes); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatBytes(r.serialized_size_bytes); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatBytes(r.serialized_size_bytes); }) << " |" << std::endl;
-    std::cout << "| Query Time |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatTime(r.query_time_us); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatTime(r.query_time_us); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatTime(r.query_time_us); }) << " |" << std::endl;
-    std::cout << "| id_generated_total |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatCount(r.id_generated_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatCount(r.id_generated_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatCount(r.id_generated_total); }) << " |" << std::endl;
-    std::cout << "| id_filtered_total |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatCount(r.id_filtered_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatCount(r.id_filtered_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatCount(r.id_filtered_total); }) << " |" << std::endl;
-    std::cout << "| id_used_total |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatCount(r.id_used_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatCount(r.id_used_total); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatCount(r.id_used_total); }) << " |" << std::endl;
-    std::cout << "| Redundancy Rate |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatRate(r.redundancy_rate); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatRate(r.redundancy_rate); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatRate(r.redundancy_rate); }) << " |" << std::endl;
+    auto printHeader = [&]() {
+        std::cout << "| Metric |";
+        for (PrefilterKind kind : display_kinds) {
+            std::cout << ' ' << prefilterKindName(kind) << " |";
+        }
+        std::cout << std::endl;
+        std::cout << "|--------|";
+        for (size_t i = 0; i < display_kinds.size(); ++i) {
+            std::cout << "----------------------|";
+        }
+        std::cout << std::endl;
+    };
+
+    auto printRow = [&](std::string_view label, const auto &formatter) {
+        std::cout << "| " << label << " |";
+        for (PrefilterKind kind : display_kinds) {
+            std::cout << ' ' << cell(kind, formatter) << " |";
+        }
+        std::cout << std::endl;
+    };
+
+    printHeader();
+    printRow("Build Time", [](const PrefilterBenchResult &r) { return formatTime(r.build_time_us); });
+    printRow("Serialized Size", [](const PrefilterBenchResult &r) { return formatBytes(r.serialized_size_bytes); });
+    printRow("Query Time", [](const PrefilterBenchResult &r) { return formatTime(r.query_time_us); });
+    printRow("id_generated_total", [](const PrefilterBenchResult &r) { return formatCount(r.id_generated_total); });
+    printRow("id_filtered_total", [](const PrefilterBenchResult &r) { return formatCount(r.id_filtered_total); });
+    printRow("id_used_total", [](const PrefilterBenchResult &r) { return formatCount(r.id_used_total); });
+    printRow("Redundancy Rate", [](const PrefilterBenchResult &r) { return formatRate(r.redundancy_rate); });
     std::cout << std::endl;
-    std::cout << "| Metric | Bloom Filter | Cuckoo Filter | XOR Filter |" << std::endl;
-    std::cout << "|--------|--------------|---------------|------------|" << std::endl;
-    std::cout << "| False Positives |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatCount(r.false_positives); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatCount(r.false_positives); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatCount(r.false_positives); }) << " |" << std::endl;
-    std::cout << "| Ground Truth |"
-              << ' ' << cell(PrefilterKind::Bloom, [](const PrefilterBenchResult &r) { return formatCount(r.ground_truth); }) << " |"
-              << ' ' << cell(PrefilterKind::Cuckoo, [](const PrefilterBenchResult &r) { return formatCount(r.ground_truth); }) << " |"
-              << ' ' << cell(PrefilterKind::Xor, [](const PrefilterBenchResult &r) { return formatCount(r.ground_truth); }) << " |" << std::endl;
+    printHeader();
+    printRow("False Positives", [](const PrefilterBenchResult &r) { return formatCount(r.false_positives); });
+    printRow("Ground Truth", [](const PrefilterBenchResult &r) { return formatCount(r.ground_truth); });
 }
 
 } // namespace fpsi::prefilter

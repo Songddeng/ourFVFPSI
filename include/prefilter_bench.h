@@ -11,7 +11,8 @@ namespace fpsi::prefilter {
 enum class PrefilterKind {
     Bloom,
     Cuckoo,
-    Xor
+    Xor,
+    VirtualBloom
 };
 
 struct PrefilterBenchConfig {
