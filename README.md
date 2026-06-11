@@ -71,7 +71,7 @@ Below are the commonly used command-line flags. Flags use a leading dash (for ex
 | `-v` | Verbosity | `0`: off (default), `1`: info |
 | `-try` | Number of runs | integer, default `1` |
 | `-prefix` | Prefix optimization flag | `0`: off (default), `1`: on |
-| `-prefilter` | Prefilter strategy | currently supports `xor` |
+| `-prefilter` | Prefilter strategy | `bfuse` enables Binary Fuse in the main protocol |
 | `-reveal_mode` | Intersection reveal mode | default is `receiver_only` (`1`); `mutual` or `0`: both parties learn the same intersection; `receiver_only` or `1`: only Receiver learns the intersection |
 | `-sf` | Legacy alias of `-reveal_mode` | compatibility only: `0` -> `mutual`, `1` -> `receiver_only` |
 
@@ -92,30 +92,30 @@ Enable prefix optimization:
 Run symmetric / mutual PSI:
 
 ```bash
-./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter xor -reveal_mode mutual -v 1
+./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter bfuse -reveal_mode mutual -v 1
 ```
 
 Run traditional receiver-only PSI:
 
 ```bash
-./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter xor -reveal_mode receiver_only -v 1
+./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter bfuse -reveal_mode receiver_only -v 1
 ```
 
 Run traditional receiver-only PSI with numeric mode flag:
 
 ```bash
-./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter xor -reveal_mode 1 -v 1
+./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter bfuse -reveal_mode 1 -v 1
 ```
 
 Run symmetric / mutual PSI with numeric mode flag:
 
 ```bash
-./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter xor -reveal_mode 0 -v 1
+./fpsi -nn 8 -d 8 -delta 16 -p 2 -prefilter bfuse -reveal_mode 0 -v 1
 ```
 
 Mode notes:
 
-- `-prefilter xor -reveal_mode mutual` is the symmetric / mutual PSI mode. Sender and Receiver both learn the same intersection result.
+- `-prefilter bfuse -reveal_mode mutual` is the symmetric / mutual PSI mode. Sender and Receiver both learn the same intersection result.
 - `-reveal_mode receiver_only` is the traditional PSI mode. Only Receiver learns the intersection result. This is also the default when `-reveal_mode` is omitted.
 - `-reveal_mode` accepts both strings (`mutual`, `receiver_only`) and numeric values (`0`, `1`).
 - Legacy scripts that still use `-sf 0` or `-sf 1` remain supported, but `-reveal_mode` is the preferred name.

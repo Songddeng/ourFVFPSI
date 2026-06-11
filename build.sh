@@ -24,4 +24,9 @@ cp ./out/build/linux/volePSI/config.h ../out/install/include/volePSI
 cd ..
 rm -rf volepsi
 
+## Fetch xor_singleheader for Binary Fuse / XOR prefilters
+if [ ! -d xor_singleheader-master ]; then
+    git clone --depth 1 --branch v2.1.0 https://github.com/FastFilter/xor_singleheader.git xor_singleheader-master
+fi
+
 cd ..

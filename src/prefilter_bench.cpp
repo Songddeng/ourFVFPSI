@@ -24,6 +24,7 @@
 
 #include <smmintrin.h>
 
+#include "binaryfusefilter.h"
 #include "cryptoTools/Crypto/PRNG.h"
 #include "id_stats.h"
 
@@ -690,6 +691,117 @@ private:
     std::vector<uint16_t> fingerprints_;
 };
 
+class BinaryFuseFilter {
+public:
+    BinaryFuseFilter() = default;
+
+    BinaryFuseFilter(const std::vector<oc::block> &keys, double target_fpr)
+    {
+        build(keys, target_fpr);
+    }
+
+    ~BinaryFuseFilter()
+    {
+        binary_fuse16_free(&filter_);
+    }
+
+    BinaryFuseFilter(BinaryFuseFilter &&other) noexcept
+        : filter_(other.filter_)
+    {
+        other.filter_.Fingerprints = nullptr;
+        other.filter_.Seed = 0;
+        other.filter_.Size = 0;
+        other.filter_.SegmentLength = 0;
+        other.filter_.SegmentLengthMask = 0;
+        other.filter_.SegmentCount = 0;
+        other.filter_.SegmentCountLength = 0;
+        other.filter_.ArrayLength = 0;
+    }
+
+    BinaryFuseFilter &operator=(BinaryFuseFilter &&other) noexcept
+    {
+        if (this != &other) {
+            binary_fuse16_free(&filter_);
+            filter_ = other.filter_;
+            other.filter_.Fingerprints = nullptr;
+            other.filter_.Seed = 0;
+            other.filter_.Size = 0;
+            other.filter_.SegmentLength = 0;
+            other.filter_.SegmentLengthMask = 0;
+            other.filter_.SegmentCount = 0;
+            other.filter_.SegmentCountLength = 0;
+            other.filter_.ArrayLength = 0;
+        }
+        return *this;
+    }
+
+    BinaryFuseFilter(const BinaryFuseFilter &) = delete;
+    BinaryFuseFilter &operator=(const BinaryFuseFilter &) = delete;
+
+    bool contains(const oc::block &key) const
+    {
+        if (filter_.Fingerprints == nullptr) {
+            return false;
+        }
+        return binary_fuse16_contain(fuseKeyForBlock(key), &filter_);
+    }
+
+    std::vector<uint8_t> serialize() const
+    {
+        std::vector<uint8_t> buffer(serializationBytes());
+        if (!buffer.empty()) {
+            binary_fuse16_serialize(&filter_, reinterpret_cast<char *>(buffer.data()));
+        }
+        return buffer;
+    }
+
+    static BinaryFuseFilter deserialize(const std::vector<uint8_t> &buffer)
+    {
+        BinaryFuseFilter filter;
+        if (!binary_fuse16_deserialize(&filter.filter_, reinterpret_cast<const char *>(buffer.data()))) {
+            throw std::runtime_error("binary fuse filter deserialize failed");
+        }
+        return filter;
+    }
+
+private:
+    static uint64_t fuseKeyForBlock(const oc::block &key)
+    {
+        return hashBlock(key, kHashSeed0 ^ kHashSeed4);
+    }
+
+    size_t serializationBytes() const
+    {
+        return sizeof(filter_.Seed) +
+            sizeof(filter_.Size) +
+            sizeof(filter_.SegmentLength) +
+            sizeof(filter_.SegmentCount) +
+            sizeof(filter_.SegmentCountLength) +
+            sizeof(filter_.ArrayLength) +
+            static_cast<size_t>(filter_.ArrayLength) * sizeof(uint16_t);
+    }
+
+    void build(const std::vector<oc::block> &keys, double target_fpr)
+    {
+        (void)target_fpr;
+
+        std::vector<uint64_t> fuse_keys(keys.size());
+        for (size_t i = 0; i < keys.size(); ++i) {
+            fuse_keys[i] = fuseKeyForBlock(keys[i]);
+        }
+
+        if (!binary_fuse16_allocate(static_cast<uint32_t>(fuse_keys.size()), &filter_)) {
+            throw std::runtime_error("binary fuse filter allocation failed");
+        }
+        if (!binary_fuse16_populate(fuse_keys.data(), static_cast<uint32_t>(fuse_keys.size()), &filter_)) {
+            binary_fuse16_free(&filter_);
+            throw std::runtime_error("binary fuse filter construction failed");
+        }
+    }
+
+    binary_fuse16_t filter_ {};
+};
+
 template <typename Builder, typename Reader>
 PrefilterBenchResult runBenchCase(
     std::string name,
@@ -772,6 +884,13 @@ PrefilterBenchResult runBenchCase(PrefilterKind kind, const PrefilterDataset &da
             target_fpr,
             [](const std::vector<oc::block> &sender_ids, double fpr) { return XorFilter(sender_ids, fpr); },
             [](const std::vector<uint8_t> &serialized) { return XorFilter::deserialize(serialized); });
+    case PrefilterKind::BinaryFuse:
+        return runBenchCase(
+            prefilterKindName(kind),
+            dataset,
+            target_fpr,
+            [](const std::vector<oc::block> &sender_ids, double fpr) { return BinaryFuseFilter(sender_ids, fpr); },
+            [](const std::vector<uint8_t> &serialized) { return BinaryFuseFilter::deserialize(serialized); });
     }
 
     throw std::runtime_error("unsupported prefilter kind");
@@ -828,6 +947,8 @@ std::string prefilterKindName(PrefilterKind kind)
         return "Cuckoo Filter";
     case PrefilterKind::Xor:
         return "XOR Filter";
+    case PrefilterKind::BinaryFuse:
+        return "Binary Fuse Filter";
     }
 
     throw std::runtime_error("unknown prefilter kind");
@@ -837,7 +958,7 @@ std::vector<PrefilterKind> parsePrefilterSelection(const std::string &filter_arg
 {
     const std::string lowered = toLowerCopy(filter_arg);
     if (lowered.empty() || lowered == "all") {
-        return { PrefilterKind::Bloom, PrefilterKind::VirtualBloom, PrefilterKind::Cuckoo, PrefilterKind::Xor };
+        return { PrefilterKind::Bloom, PrefilterKind::VirtualBloom, PrefilterKind::Cuckoo, PrefilterKind::Xor, PrefilterKind::BinaryFuse };
     }
     if (lowered == "bloom") {
         return { PrefilterKind::Bloom };
@@ -851,8 +972,11 @@ std::vector<PrefilterKind> parsePrefilterSelection(const std::string &filter_arg
     if (lowered == "xor") {
         return { PrefilterKind::Xor };
     }
+    if (lowered == "bfuse" || lowered == "binaryfuse" || lowered == "binary_fuse" || lowered == "binary-fuse" || lowered == "fuse") {
+        return { PrefilterKind::BinaryFuse };
+    }
 
-    throw std::runtime_error("invalid -filter value, expected bloom|vbf|cuckoo|xor|all");
+    throw std::runtime_error("invalid -filter value, expected bloom|vbf|cuckoo|xor|bfuse|all");
 }
 
 PrefilterDataset generatePrefilterDataset(uint64_t receiver_candidate_count, uint64_t ground_truth, uint64_t seed)
@@ -913,6 +1037,8 @@ std::vector<uint8_t> buildSerializedPrefilter(
         return CuckooFilter(sender_ids, target_fpr).serialize();
     case PrefilterKind::Xor:
         return XorFilter(sender_ids, target_fpr).serialize();
+    case PrefilterKind::BinaryFuse:
+        return BinaryFuseFilter(sender_ids, target_fpr).serialize();
     }
 
     throw std::runtime_error("unsupported prefilter kind");
@@ -946,6 +1072,9 @@ std::vector<uint32_t> querySerializedPrefilter(
         return kept_indices;
     case PrefilterKind::Xor:
         keep_if_match(XorFilter::deserialize(serialized_filter));
+        return kept_indices;
+    case PrefilterKind::BinaryFuse:
+        keep_if_match(BinaryFuseFilter::deserialize(serialized_filter));
         return kept_indices;
     }
 
@@ -988,11 +1117,12 @@ void printPrefilterBenchMarkdown(
     const std::vector<PrefilterBenchResult> &results,
     const PrefilterBenchConfig &config)
 {
-    const std::array<PrefilterKind, 4> display_kinds = {
+    const std::array<PrefilterKind, 5> display_kinds = {
         PrefilterKind::Bloom,
         PrefilterKind::VirtualBloom,
         PrefilterKind::Cuckoo,
-        PrefilterKind::Xor
+        PrefilterKind::Xor,
+        PrefilterKind::BinaryFuse
     };
 
     auto findResult = [&](PrefilterKind kind) -> const PrefilterBenchResult * {

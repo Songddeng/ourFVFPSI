@@ -28,10 +28,12 @@ int main()
 {
     try {
         const auto allKinds = fpsi::prefilter::parsePrefilterSelection("all");
-        require(allKinds.size() == 4, "expected all selection to include four filters");
+        require(allKinds.size() == 5, "expected all selection to include five filters");
 
         const auto vbfKinds = fpsi::prefilter::parsePrefilterSelection("vbf");
         require(vbfKinds.size() == 1 && vbfKinds.front() == PrefilterKind::VirtualBloom, "expected vbf selection to resolve to Virtual Bloom Filter");
+        const auto bfuseKinds = fpsi::prefilter::parsePrefilterSelection("bfuse");
+        require(bfuseKinds.size() == 1 && bfuseKinds.front() == PrefilterKind::BinaryFuse, "expected bfuse selection to resolve to Binary Fuse Filter");
 
         const auto dataset = fpsi::prefilter::generatePrefilterDataset(4096, 128, 7);
         require(!dataset.sender_ids.empty(), "sender dataset must not be empty");

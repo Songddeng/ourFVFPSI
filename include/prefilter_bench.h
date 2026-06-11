@@ -12,7 +12,8 @@ enum class PrefilterKind {
     Bloom,
     Cuckoo,
     Xor,
-    VirtualBloom
+    VirtualBloom,
+    BinaryFuse
 };
 
 struct PrefilterBenchConfig {

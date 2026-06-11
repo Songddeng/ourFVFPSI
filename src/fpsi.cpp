@@ -812,14 +812,24 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     u64 delta_p = std::pow(delta, lp);
     int prefixLen = static_cast<int>(std::ceil(std::log2(delta_p + 1)));
     const std::string prefilterMode = toLowerCopy(cmd.getOr<std::string>("prefilter", ""));
-    const bool enableXorPrefilter = (prefilterMode == "xor");
+    const bool enablePrefilter = !prefilterMode.empty();
+    fpsi::prefilter::PrefilterKind prefilterKind = fpsi::prefilter::PrefilterKind::BinaryFuse;
     const double prefilterFpr = cmd.getOr<double>("fpr", 1e-3);
 
-    if (!prefilterMode.empty() && !enableXorPrefilter) {
-        throw std::runtime_error("fuzzyPsiLp currently supports only -prefilter xor");
+    if (enablePrefilter) {
+        if (
+            prefilterMode == "bfuse" ||
+            prefilterMode == "binaryfuse" ||
+            prefilterMode == "binary_fuse" ||
+            prefilterMode == "binary-fuse" ||
+            prefilterMode == "fuse") {
+            prefilterKind = fpsi::prefilter::PrefilterKind::BinaryFuse;
+        } else {
+            throw std::runtime_error("fuzzyPsiLp currently supports only -prefilter bfuse");
+        }
     }
-    if (mutualReveal && !enableXorPrefilter) {
-        throw std::runtime_error("mutual reveal mode requires -prefilter xor");
+    if (mutualReveal && !enablePrefilter) {
+        throw std::runtime_error("mutual reveal mode requires -prefilter bfuse");
     }
 
     std::vector<std::vector<u64>> sendSet;
@@ -955,7 +965,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         const std::vector<block> *workIdS = &ID_S;
         const std::vector<block> *workIdR = &ID_R;
 
-        if (enableXorPrefilter) {
+        if (enablePrefilter) {
             const std::vector<block> distinctSenderIds = collectDistinctBlocks(ID_S);
             const std::vector<block> distinctReceiverIds = collectDistinctBlocks(ID_R);
             uint64_t receiverDistinctHits = 0;
@@ -965,7 +975,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             if (receiverOnlyReveal) {
                 std::thread sendPrefilter([&] {
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         ID_S,
                         prefilterFpr);
                     const uint64_t filterBytes = serializedFilter.size();
@@ -980,13 +990,13 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     coproto::sync_wait(sock[1].recv(serializedFilter));
 
                     const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         serializedFilter,
                         distinctReceiverIds);
                     receiverDistinctHits = distinctHitIndices.size();
 
                     receiverKeptIndices = fpsi::prefilter::querySerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         serializedFilter,
                         ID_R);
                     for (uint32_t index : receiverKeptIndices) {
@@ -1007,7 +1017,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                 std::thread sendPrefilter([&] {
                     PRNG localDummyPrng(senderPrefilterDummySeed);
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         ID_S,
                         prefilterFpr);
                     const uint64_t filterBytes = serializedFilter.size();
@@ -1034,13 +1044,13 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     coproto::sync_wait(sock[1].recv(serializedFilter));
 
                     const auto distinctHitIndices = fpsi::prefilter::querySerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         serializedFilter,
                         distinctReceiverIds);
                     receiverDistinctHits = distinctHitIndices.size();
 
                     receiverKeptIndices = fpsi::prefilter::querySerializedPrefilter(
-                        fpsi::prefilter::PrefilterKind::Xor,
+                        prefilterKind,
                         serializedFilter,
                         ID_R);
 
@@ -1112,7 +1122,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_S(workN * d);
             SoOPPRFCommStats soOpprfStats;
-            recv.OPPRF(inputs, rand_S, receiverOnlyReveal && enableXorPrefilter, soOpprfStats);
+            recv.OPPRF(inputs, rand_S, receiverOnlyReveal && enablePrefilter, soOpprfStats);
             filterOprfCommBytes = soOpprfStats.oprf_comm_bytes;
             filterOkvsCommBytes = soOpprfStats.okvs_comm_bytes;
 
@@ -1166,7 +1176,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             filterVal.reserve(workN * d * (2 * delta + 1));
 
             for (u64 i = 0; i < workN; i++) {
-                if (receiverOnlyReveal && enableXorPrefilter && receiverPrefilterHitMask[i] == 0) {
+                if (receiverOnlyReveal && enablePrefilter && receiverPrefilterHitMask[i] == 0) {
                     continue;
                 }
 
@@ -1185,7 +1195,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_R(workN * d);
 
-            if (receiverOnlyReveal && enableXorPrefilter) {
+            if (receiverOnlyReveal && enablePrefilter) {
                 send.OPPRF(filterKey, filterVal, rand_R, filterKey.size());
             } else {
                 send.OPPRF(filterKey, filterVal, rand_R);
@@ -1320,7 +1330,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
-        if (enableXorPrefilter) {
+        if (enablePrefilter) {
             std::vector<block> trueMatchedReceiverIds;
             trueMatchedReceiverIds.reserve(choiceBit.size());
 
@@ -1376,7 +1386,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     } else {
         printSummaryLine("[ours]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
-    if (enableXorPrefilter) {
+    if (enablePrefilter) {
         fpsi::stats::print_filter_audit_stats("fpsiFilterLp", filterAuditTotals);
     } else {
         fpsi::stats::id_filtered_total.store(

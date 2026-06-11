@@ -28,6 +28,15 @@ set(SECURE_CMP_BUILD_ORIGINAL_MAIN ON CACHE BOOL "Build upstream secure comparis
 include_directories(include)
 include_directories(${CMAKE_SOURCE_DIR}/thirdparty/out/install/include)
 
+set(XOR_SINGLEHEADER_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/thirdparty/xor_singleheader-master/include")
+if(NOT EXISTS "${XOR_SINGLEHEADER_INCLUDE_DIR}/binaryfusefilter.h")
+  message(FATAL_ERROR
+    "Missing FastFilter xor_singleheader dependency. "
+    "Expected ${XOR_SINGLEHEADER_INCLUDE_DIR}/binaryfusefilter.h. "
+    "Vendor thirdparty/xor_singleheader-master or run build.sh to fetch it.")
+endif()
+include_directories(${XOR_SINGLEHEADER_INCLUDE_DIR})
+
 if(NOT TARGET sparsehash)
   add_library(sparsehash INTERFACE IMPORTED)
   set_target_properties(sparsehash PROPERTIES
