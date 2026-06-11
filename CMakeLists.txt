@@ -23,8 +23,6 @@ list(PREPEND CMAKE_PREFIX_PATH
 set(SECUREJOIN_INCLUDE_ROOT "${CMAKE_SOURCE_DIR}/thirdparty/out/install/include" CACHE PATH "Include root containing the secure-join directory")
 set(SECUREJOIN_GENERATED_INCLUDE_ROOT "${CMAKE_SOURCE_DIR}/thirdparty/out/install/include" CACHE PATH "Include root containing generated secure-join headers such as secure-join/config.h")
 set(SECUREJOIN_LIBRARY "${CMAKE_SOURCE_DIR}/thirdparty/out/install/lib/libsecureJoin.a" CACHE FILEPATH "Path to libsecureJoin.a")
-option(FPSI_ENABLE_SECURE_CMP_EXAMPLE "Build the standalone secure comparison integration example." ON)
-set(SECURE_CMP_BUILD_ORIGINAL_MAIN ON CACHE BOOL "Build upstream secure comparison main executable." FORCE)
 include_directories(include)
 include_directories(${CMAKE_SOURCE_DIR}/thirdparty/out/install/include)
 
@@ -51,8 +49,6 @@ if(NOT TARGET libdivide)
   )
 endif()
 
-add_subdirectory(thirdparty/2PC_eq_cmp-test EXCLUDE_FROM_ALL)
-
 file(GLOB SOURCES src/*.cpp)
 
 add_executable(fpsi ${SOURCES})
@@ -73,7 +69,6 @@ find_package(fmt REQUIRED)
 
 target_link_libraries(fpsi PRIVATE oc::cryptoTools oc::libOTe visa::volePSI fmt::fmt)
 target_link_libraries(fpsi PRIVATE ${SECUREJOIN_LIBRARY})
-target_include_directories(fpsi PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/2PC_eq_cmp-test)
 
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
@@ -83,16 +78,6 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
 endif()
 
 add_definitions(-DNDEBUG)
-
-if(FPSI_ENABLE_SECURE_CMP_EXAMPLE)
-  add_executable(test_secure_cmp tests/test_secure_cmp.cpp)
-  target_link_libraries(test_secure_cmp PRIVATE secure_cmp::secure_cmp secure_cmp_deps)
-  target_include_directories(test_secure_cmp PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/2PC_eq_cmp-test)
-
-  if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
-    target_compile_options(test_secure_cmp PRIVATE -mpclmul -maes -msse2 -msse4.1)
-  endif()
-endif()
 
 add_executable(test_prefilter_bench
   tests/test_prefilter_bench.cpp

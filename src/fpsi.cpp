@@ -814,7 +814,11 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     const std::string prefilterMode = toLowerCopy(cmd.getOr<std::string>("prefilter", ""));
     const bool enablePrefilter = !prefilterMode.empty();
     fpsi::prefilter::PrefilterKind prefilterKind = fpsi::prefilter::PrefilterKind::BinaryFuse;
-    const double prefilterFpr = cmd.getOr<double>("fpr", 1e-3);
+    constexpr double kBinaryFuseHelperFpr = 1e-3;
+
+    if (cmd.isSet("fpr")) {
+        throw std::runtime_error("fuzzyPsiLp does not support -fpr; the Binary Fuse prefilter uses a fixed configuration");
+    }
 
     if (enablePrefilter) {
         if (
@@ -977,7 +981,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
                         prefilterKind,
                         ID_S,
-                        prefilterFpr);
+                        kBinaryFuseHelperFpr);
                     const uint64_t filterBytes = serializedFilter.size();
                     coproto::sync_wait(sock[0].send(filterBytes));
                     coproto::sync_wait(sock[0].send(serializedFilter));
@@ -1019,7 +1023,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                     const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
                         prefilterKind,
                         ID_S,
-                        prefilterFpr);
+                        kBinaryFuseHelperFpr);
                     const uint64_t filterBytes = serializedFilter.size();
                     coproto::sync_wait(sock[0].send(filterBytes));
                     coproto::sync_wait(sock[0].send(serializedFilter));
