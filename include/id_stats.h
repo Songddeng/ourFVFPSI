@@ -1,9 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace fpsi::stats
@@ -64,25 +67,34 @@ namespace fpsi::stats
         return (totalHits - trueIntersectionCount) / totalHits;
     }
 
-    inline void print_filter_audit_stats(const std::string &label, const FilterAuditStats &stats)
+    inline std::string format_summary_count(double value)
     {
-        const double invalidationRate = compute_filter_invalidation_rate(
-            stats.r_id_generated_distinct,
-            stats.r_filtered_useless_ids);
-        const double hitSetRedundancyRate = compute_hit_set_redundancy_rate(
-            stats.r_total_hits,
-            stats.true_intersection_count);
+        const double rounded = std::round(value);
+        if (std::fabs(value - rounded) < 1e-9) {
+            return std::to_string(static_cast<uint64_t>(rounded));
+        }
 
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(1) << value;
+        return oss.str();
+    }
+
+    inline void print_filter_audit_stats(const std::string &label, const FilterAuditStats &stats, uint64_t num_runs = 1)
+    {
+        (void)label;
         const auto oldFlags = std::cout.flags();
         const auto oldPrecision = std::cout.precision();
+        const auto oldFill = std::cout.fill();
 
-        std::cout << "[id-stats] " << label << std::endl;
-        // std::cout << "  FMap_Distinct_Stats: S_Generated = " << stats.s_id_generated_distinct
-        //           << " | R_Generated = " << stats.r_id_generated_distinct << std::endl;
-        std::cout << "  Intersection_Context: True_Intersection_Estimate = "
-                  << stats.true_intersection_estimate << std::endl;
-        std::cout << "  Filter_Execution_Result: R_Total_Hits = " << stats.r_total_hits
-                  << " | R_Blocked_Useless = " << stats.r_filtered_useless_ids << std::endl;
+        const double runs = static_cast<double>(std::max<uint64_t>(num_runs, 1));
+        const double avgTrueIntersectionEstimate = static_cast<double>(stats.true_intersection_estimate) / runs;
+        const double avgTotalHits = static_cast<double>(stats.r_total_hits) / runs;
+
+        std::cout << std::setfill(' ');
+        std::cout << "[Summary] True_Intersection_Estimate = "
+                  << format_summary_count(avgTrueIntersectionEstimate)
+                  << " | Total Hits = " << format_summary_count(avgTotalHits)
+                  << std::endl;
         // std::cout << std::fixed << std::setprecision(3);
         // std::cout << "  Filter_Efficiency_Rate: (R_Blocked_Useless / R_Generated) = "
         //           << invalidationRate << " (" << (invalidationRate * 100.0) << "%)" << std::endl;
@@ -93,6 +105,7 @@ namespace fpsi::stats
 
         std::cout.flags(oldFlags);
         std::cout.precision(oldPrecision);
+        std::cout.fill(oldFill);
     }
 
     inline void print_id_stats(const std::string &label)

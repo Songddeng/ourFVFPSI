@@ -106,3 +106,11 @@ add_executable(test_id_stats
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
   target_compile_options(test_id_stats PRIVATE -mpclmul -maes -msse2 -msse4.1)
 endif()
+
+add_executable(test_stage_profile
+  tests/test_stage_profile.cpp
+)
+
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+  target_compile_options(test_stage_profile PRIVATE -mpclmul -maes -msse2 -msse4.1)
+endif()

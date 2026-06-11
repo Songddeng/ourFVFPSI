@@ -1,10 +1,12 @@
 #pragma once
 
+#include <cmath>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <ostream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,17 +35,28 @@ public:
         entry.count += 1;
     }
 
-    void print(const std::string &title = "") const
+    void print(std::ostream &os = std::cout, const std::string &title = "") const
     {
+        const auto oldFlags = os.flags();
+        const auto oldPrecision = os.precision();
+        const auto oldFill = os.fill();
+
+        constexpr int kLabelWidth = 30;
+        constexpr int kMetricWidth = 10;
+        constexpr const char *kDivider = "----------------------------------------------------------------------";
+
+        os << std::setfill(' ');
+
         if (!title.empty()) {
-            std::cout << title << std::endl;
+            os << title << std::endl;
         }
 
-        std::cout << std::left << std::setw(30) << "Label"
-                  << std::right << std::setw(12) << "Time (ms)"
-                  << std::setw(12) << "diff (ms)"
-                  << std::setw(12) << "Comm (MB)" << std::endl;
-        std::cout << std::string(66, '_') << std::endl;
+        os << kDivider << std::endl;
+        os << std::left << std::setw(kLabelWidth) << "Label"
+           << " | " << std::right << std::setw(kMetricWidth) << "Time (ms)"
+           << " | " << std::setw(kMetricWidth) << "Diff (ms)"
+           << " | " << std::setw(kMetricWidth) << "Comm (MB)" << std::endl;
+        os << kDivider << std::endl;
 
         double elapsed_ms = 0.0;
         for (const auto &entry : entries_) {
@@ -51,12 +64,25 @@ public:
             const double avg_comm_mb = entry.total_comm_mb / static_cast<double>(entry.count);
             elapsed_ms += avg_diff_ms;
 
-            std::cout << std::left << std::setw(30) << entry.label
-                      << std::right << std::setw(12) << std::fixed << std::setprecision(1) << elapsed_ms
-                      << std::setw(12) << std::fixed << std::setprecision(3) << avg_diff_ms
-                      << std::setw(12) << std::fixed << std::setprecision(3) << avg_comm_mb
-                      << std::endl;
+            os << std::left << std::setw(kLabelWidth) << entry.label
+               << " | " << std::right << std::setw(kMetricWidth) << std::fixed << std::setprecision(1) << elapsed_ms
+               << " | " << std::setw(kMetricWidth) << std::fixed << std::setprecision(1) << avg_diff_ms
+               << " | ";
+
+            if (std::fabs(avg_comm_mb) < 0.005) {
+                os << std::setw(kMetricWidth) << "-";
+            } else {
+                os << std::setw(kMetricWidth) << std::fixed << std::setprecision(2) << avg_comm_mb;
+            }
+
+            os << std::endl;
         }
+
+        os << kDivider << std::endl;
+
+        os.flags(oldFlags);
+        os.precision(oldPrecision);
+        os.fill(oldFill);
     }
 
     double getAverageCommMB(const std::string &label) const

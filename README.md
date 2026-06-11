@@ -170,7 +170,7 @@ Important behavior:
 | `-delta` | all `fpsi` routes | fuzzy distance threshold | `2` | use powers of two where possible; prefix code assumes supported table entries |
 | `-p` | all `fpsi` routes | metric selector | `0` | `0 = L_infinity`, `1 = L1`, `2 = L2` |
 | `-try` | all `fpsi` routes | number of repeated runs for averaging | `1` | summary output is averaged over runs |
-| `-v` | all `fpsi` routes | verbose mode | `0` | `1` prints extra internal details |
+| `-v` | all `fpsi` routes | verbose mode | `0` | `1` prints stage timing tables, `2` also prints per-item intersection details |
 | `-prefix` | prefix routes only | enable prefix-optimized protocol path | off | presence flag; recommended form is just `-prefix` |
 | `-prefilter` | non-prefix `L1/L2` only | enable prefilter before the main `L1/L2` protocol | off | only `bfuse` is supported in the main path |
 | `-reveal_mode` | non-prefix `L1/L2` only | choose who learns the intersection | `receiver_only` | accepts `mutual`, `receiver_only`, `0`, `1`, plus compatibility synonyms |

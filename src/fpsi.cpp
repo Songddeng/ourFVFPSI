@@ -1,4 +1,5 @@
 #include "fpsi.h"
+#include <algorithm>
 #include <cmath>
 #include <coproto/Socket/AsioSocket.h>
 #include <cryptoTools/Common/Defines.h>
@@ -52,6 +53,22 @@ std::pair<u64, u64> gridCandidateRange(u64 value, int delta)
     const auto end = idx == std::numeric_limits<u64>::max() ? idx : idx + 1;
 
     return { start, end };
+}
+
+uint64_t countSelections(const std::vector<u8> &selectionBits)
+{
+    return static_cast<uint64_t>(std::count(selectionBits.begin(), selectionBits.end(), static_cast<u8>(1)));
+}
+
+void printStageDiagnostics(int verbose, const oc::Timer &time, const StageProfileSummary &stageSummary)
+{
+    if (verbose >= 1) {
+        stageSummary.print(std::cout, "[Timing]");
+    }
+
+    if (verbose >= 2) {
+        std::cout << time << std::endl;
+    }
 }
 
 void printSummaryLine(
@@ -758,19 +775,15 @@ void fuzzyPsi(const oc::CLP &cmd)
         recvOT.join();
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
-        if (verbose) {
+        if (verbose >= 1) {
             for (int i = 0; i < choiceBit.size(); i++) {
-                if (choiceBit[i]) {
+                if (choiceBit[i] && verbose >= 2) {
                     std::cout << "intersection at index " << i << std::endl;
                 }
                 if (choiceBit[i] && std::find(interIndices.begin(), interIndices.end(), i) == interIndices.end()) {
                     throw runtime_error("false positive in fuzzyPsi");
                 }
             }
-            std::cout << "All matches found!" << std::endl;
-
-            std::cout << time << std::endl;
-            stageSummary.print();
         }
     }
 
@@ -786,6 +799,7 @@ void fuzzyPsi(const oc::CLP &cmd)
     const double otComm = stageSummary.getAverageCommMB("OT done");
 
     printSummaryLine("[ours]", "L0", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
+    printStageDiagnostics(verbose, time, stageSummary);
     fpsi::stats::id_filtered_total.store(
         fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
         std::memory_order_relaxed);
@@ -930,6 +944,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     uint64_t prefilterGeneratedAcc = 0;
     uint64_t prefilterFilteredAcc = 0;
     fpsi::stats::FilterAuditStats filterAuditTotals;
+    uint64_t mutualIntersectionHitsTotal = 0;
 
     for (int tryIdx = 0; tryIdx < numTry; tryIdx++) {
         StageProfileRun stageRun(stageSummary);
@@ -1352,25 +1367,24 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             filterAuditTotals.true_intersection_count += collectDistinctBlocks(trueMatchedReceiverIds).size();
         }
 
-        if (verbose) {
+        const uint64_t receiverIntersectionHits = countSelections(choiceBit);
+        mutualIntersectionHitsTotal += receiverIntersectionHits;
+
+        if (verbose >= 1) {
             for (int i = 0; i < choiceBit.size(); i++) {
-                if (choiceBit[i]) {
+                if (choiceBit[i] && verbose >= 2) {
                     std::cout << "intersection at index " << activeIndices[i] << std::endl;
                 }
                 if (choiceBit[i] && !trueIntersectionIndexSet.contains(static_cast<uint64_t>(activeIndices[i]))) {
                     throw runtime_error("false positive in fuzzyPsi");
                 }
             }
-            if (mutualReveal) {
+            if (mutualReveal && verbose >= 2) {
                 std::cout << "sender reveal mode: " << intersectionRevealModeName(revealMode) << std::endl;
                 for (const block &id : senderRevealedIntersectionIds) {
                     std::cout << "sender learns intersection ID " << id << std::endl;
                 }
             }
-            std::cout << "All matches found!" << std::endl;
-
-            std::cout << time << std::endl;
-            stageSummary.print();
         }
     }
 
@@ -1390,8 +1404,16 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     } else {
         printSummaryLine("[ours]", "L2", d, delta, n, comm, comp, fmapComm, filterComm, otComm);
     }
+    if (mutualReveal) {
+        const uint64_t runs = static_cast<uint64_t>(std::max(numTry, 1));
+        const double avgMutualIntersectionHits = static_cast<double>(mutualIntersectionHitsTotal) / static_cast<double>(runs);
+        std::cout << "[Result] Mutual Intersection Found: "
+                  << fpsi::stats::format_summary_count(avgMutualIntersectionHits)
+                  << " items." << std::endl;
+    }
+    printStageDiagnostics(verbose, time, stageSummary);
     if (enablePrefilter) {
-        fpsi::stats::print_filter_audit_stats("fpsiFilterLp", filterAuditTotals);
+        fpsi::stats::print_filter_audit_stats("fpsiFilterLp", filterAuditTotals, static_cast<uint64_t>(std::max(numTry, 1)));
     } else {
         fpsi::stats::id_filtered_total.store(
             fpsi::stats::id_generated_total.load(std::memory_order_relaxed),
