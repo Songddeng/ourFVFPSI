@@ -3,7 +3,6 @@
 #include <cryptoTools/Common/Defines.h>
 #include <cryptoTools/Common/block.h>
 #include <cryptoTools/Crypto/PRNG.h>
-#include <fmt/format.h>
 #include <iostream>
 #include <macoro/thread_pool.h>
 #include <thread>
@@ -44,19 +43,7 @@ void printSummaryLine(
     double filterComm,
     double otComm)
 {
-    std::cout << fmt::format(
-                     "{:<12} {:<6} {:^5} {:^5} {:^5} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f}",
-                     proto,
-                     metric,
-                     d,
-                     delta,
-                     n,
-                     comm,
-                     comp,
-                     fmapComm,
-                     filterComm,
-                     otComm)
-              << std::endl;
+    printProtocolSummaryLine(std::cout, proto, metric, d, delta, n, comm, comp, fmapComm, filterComm, otComm);
 }
 
 } // namespace
@@ -709,6 +696,7 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        time.setTimePoint("OT done");
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
@@ -722,7 +710,8 @@ void fuzzyPsiPrefix(const oc::CLP &cmd)
             }
             std::cout << "All matches found!" << std::endl;
 
-            std::cout << time << std::endl;
+            printTimerProfile(time);
+            std::cout << std::endl;
             stageSummary.print();
         }
     }
@@ -1262,6 +1251,7 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        time.setTimePoint("OT done");
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose) {
@@ -1275,7 +1265,8 @@ void fuzzyPsiLpPrefix(const oc::CLP &cmd)
             }
             std::cout << "All matches found!" << std::endl;
 
-            std::cout << time << std::endl;
+            printTimerProfile(time);
+            std::cout << std::endl;
             stageSummary.print();
         }
     }

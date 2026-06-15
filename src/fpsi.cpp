@@ -5,7 +5,6 @@
 #include <cryptoTools/Common/Defines.h>
 #include <cryptoTools/Common/block.h>
 #include <cstdlib>
-#include <fmt/format.h>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -63,11 +62,13 @@ uint64_t countSelections(const std::vector<u8> &selectionBits)
 void printStageDiagnostics(int verbose, const oc::Timer &time, const StageProfileSummary &stageSummary)
 {
     if (verbose >= 1) {
-        stageSummary.print(std::cout, "[Timing]");
+        printTimerProfile(time);
+        std::cout << std::endl;
+        stageSummary.print();
     }
 
     if (verbose >= 2) {
-        std::cout << time << std::endl;
+        std::cout << std::endl << time << std::endl;
     }
 }
 
@@ -83,19 +84,7 @@ void printSummaryLine(
     double filterComm,
     double otComm)
 {
-    std::cout << fmt::format(
-                     "{:<12} {:<6} {:^5} {:^5} {:^5} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f} {:^10.3f}",
-                     proto,
-                     metric,
-                     d,
-                     delta,
-                     n,
-                     comm,
-                     comp,
-                     fmapComm,
-                     filterComm,
-                     otComm)
-              << std::endl;
+    printProtocolSummaryLine(std::cout, proto, metric, d, delta, n, comm, comp, fmapComm, filterComm, otComm);
 }
 
 std::string toLowerCopy(std::string value)
@@ -773,6 +762,7 @@ void fuzzyPsi(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        time.setTimePoint("OT done");
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
         if (verbose >= 1) {
@@ -1315,6 +1305,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         sendOT.join();
         recvOT.join();
+        time.setTimePoint("OT done");
 
         std::vector<block> senderRevealedIntersectionIds;
         if (mutualReveal) {
