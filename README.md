@@ -4,6 +4,34 @@ This repository contains the research implementation of fuzzy private set inters
 
 The main executable is `build/fpsi`. It does not read an external dataset file. Instead, it generates two synthetic sets in memory, injects a controlled overlap, runs the selected FPSI protocol, and prints communication/time statistics.
 
+## Quick Start
+
+Build the project:
+
+```bash
+./build.sh
+cmake -S . -B build
+cmake --build build -j
+```
+
+Run one baseline `L_infinity` example:
+
+```bash
+./build/fpsi -nn 8 -d 8 -delta 16 -try 1
+```
+
+Run one prefix-optimized `L2` example:
+
+```bash
+./build/fpsi -nn 8 -d 8 -delta 16 -p 2 -prefix -try 1
+```
+
+Run the maintained smoke test:
+
+```bash
+./build/test_prefilter_filters
+```
+
 ## What Is In This Repo
 
 - `src/fpsi.cpp`: main non-prefix FPSI implementations.
