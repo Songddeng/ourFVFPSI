@@ -1,5 +1,4 @@
-# Efficient Fuzzy Private Set Intersection from Secret-shared OPRF
-hello 
+# Equal Fuzzy PSI 
 This repository contains the research implementation of fuzzy private set intersection (FPSI) and its prefix-optimized variants.
 
 The main executable is `build/fpsi`. It does not read an external dataset file. Instead, it generates two synthetic sets in memory, injects a controlled overlap, runs the selected FPSI protocol, and prints communication/time statistics.

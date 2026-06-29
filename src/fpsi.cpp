@@ -100,6 +100,11 @@ enum class IntersectionRevealMode {
     ReceiverOnly,
 };
 
+enum class ExecutionPath {
+    Legacy,
+    ReceiverFuseHandoff,
+};
+
 const char *intersectionRevealModeName(IntersectionRevealMode mode)
 {
     switch (mode) {
@@ -138,6 +143,28 @@ IntersectionRevealMode parseIntersectionRevealMode(const oc::CLP &cmd)
     }
 
     throw std::runtime_error("legacy -sf must be 0 or 1");
+}
+
+ExecutionPath parseExecutionPath(const oc::CLP &cmd)
+{
+    const std::string execPath = toLowerCopy(cmd.getOr<std::string>("exec_path", "legacy"));
+    if (
+        execPath == "legacy" ||
+        execPath == "default") {
+        return ExecutionPath::Legacy;
+    }
+
+    if (
+        execPath == "receiver_fuse_handoff" ||
+        execPath == "receiver-fuse-handoff" ||
+        execPath == "fuse_handoff" ||
+        execPath == "fuse-handoff" ||
+        execPath == "bfuse_handoff" ||
+        execPath == "bfuse-handoff") {
+        return ExecutionPath::ReceiverFuseHandoff;
+    }
+
+    throw std::runtime_error("unsupported -exec_path; use legacy|receiver_fuse_handoff");
 }
 
 template <typename T>
@@ -810,13 +837,17 @@ void fuzzyPsiLp(const oc::CLP &cmd)
     int verbose = cmd.getOr("v", 0);
     int numTry = cmd.getOr("try", 1);
     const IntersectionRevealMode revealMode = parseIntersectionRevealMode(cmd);
+    const ExecutionPath executionPath = parseExecutionPath(cmd);
     const bool mutualReveal = revealMode == IntersectionRevealMode::Mutual;
     const bool receiverOnlyReveal = revealMode == IntersectionRevealMode::ReceiverOnly;
+    const bool useReceiverFuseHandoff = executionPath == ExecutionPath::ReceiverFuseHandoff;
 
     u64 delta_p = std::pow(delta, lp);
     int prefixLen = static_cast<int>(std::ceil(std::log2(delta_p + 1)));
     const std::string prefilterMode = toLowerCopy(cmd.getOr<std::string>("prefilter", ""));
-    const bool enablePrefilter = !prefilterMode.empty();
+    const bool prefilterRequested = !prefilterMode.empty();
+    const bool enableLegacyPrefilter = prefilterRequested && !useReceiverFuseHandoff;
+    const bool enableAnyPrefilterPath = enableLegacyPrefilter || useReceiverFuseHandoff;
     fpsi::prefilter::PrefilterKind prefilterKind = fpsi::prefilter::PrefilterKind::BinaryFuse;
     constexpr double kBinaryFuseHelperFpr = 1e-3;
 
@@ -824,7 +855,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         throw std::runtime_error("fuzzyPsiLp does not support -fpr; the Binary Fuse prefilter uses a fixed configuration");
     }
 
-    if (enablePrefilter) {
+    if (prefilterRequested) {
         if (
             prefilterMode == "bfuse" ||
             prefilterMode == "binaryfuse" ||
@@ -836,7 +867,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             throw std::runtime_error("fuzzyPsiLp currently supports only -prefilter bfuse");
         }
     }
-    if (mutualReveal && !enablePrefilter) {
+    if (mutualReveal && executionPath == ExecutionPath::Legacy && !enableLegacyPrefilter) {
         throw std::runtime_error("mutual reveal mode requires -prefilter bfuse");
     }
 
@@ -974,7 +1005,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
         const std::vector<block> *workIdS = &ID_S;
         const std::vector<block> *workIdR = &ID_R;
 
-        if (enablePrefilter) {
+        if (enableLegacyPrefilter) {
             const std::vector<block> distinctSenderIds = collectDistinctBlocks(ID_S);
             const std::vector<block> distinctReceiverIds = collectDistinctBlocks(ID_R);
             uint64_t receiverDistinctHits = 0;
@@ -1099,6 +1130,90 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             filterAuditTotals.r_total_hits += receiverDistinctHits;
             filterAuditTotals.r_filtered_useless_ids += static_cast<uint64_t>(distinctReceiverIds.size()) - receiverDistinctHits;
             stageRun.mark("prefilter done", totalCommBytes(sock, sock2));
+        } else if (useReceiverFuseHandoff) {
+            const std::vector<block> distinctSenderIds = collectDistinctBlocks(ID_S);
+            const std::vector<block> distinctReceiverIds = collectDistinctBlocks(ID_R);
+            std::vector<uint32_t> senderKeptIndices;
+
+            std::thread senderFuseHandoff([&] {
+                uint64_t filterBytes = 0;
+                coproto::sync_wait(sock[0].recv(filterBytes));
+                std::vector<uint8_t> serializedFilter(filterBytes);
+                if (filterBytes != 0) {
+                    coproto::sync_wait(sock[0].recv(serializedFilter));
+                }
+
+                senderKeptIndices = fpsi::prefilter::querySerializedPrefilter(
+                    prefilterKind,
+                    serializedFilter,
+                    ID_S);
+
+                const uint64_t candidateCount = senderKeptIndices.size();
+                coproto::sync_wait(sock[0].send(candidateCount));
+                if (candidateCount != 0) {
+                    coproto::sync_wait(sock[0].send(senderKeptIndices));
+                }
+
+                filteredSendSet = selectRowsByIndex(sendSet, senderKeptIndices);
+                filteredIdS = selectByIndex(ID_S, senderKeptIndices);
+            });
+
+            std::thread receiverFuseHandoff([&] {
+                const auto serializedFilter = fpsi::prefilter::buildSerializedPrefilter(
+                    prefilterKind,
+                    ID_R,
+                    kBinaryFuseHelperFpr);
+                const uint64_t filterBytes = serializedFilter.size();
+                coproto::sync_wait(sock[1].send(filterBytes));
+                if (filterBytes != 0) {
+                    coproto::sync_wait(sock[1].send(serializedFilter));
+                }
+
+                uint64_t candidateCount = 0;
+                coproto::sync_wait(sock[1].recv(candidateCount));
+                senderKeptIndices.resize(candidateCount);
+                if (candidateCount != 0) {
+                    coproto::sync_wait(sock[1].recv(senderKeptIndices));
+                }
+
+                filteredRecvSet = selectRowsByIndex(recvSet, senderKeptIndices);
+                filteredIdR = selectByIndex(ID_R, senderKeptIndices);
+                activeIndices = selectByIndex(activeIndices, senderKeptIndices);
+            });
+
+            senderFuseHandoff.join();
+            receiverFuseHandoff.join();
+
+            if (filteredIdS.size() != filteredIdR.size()) {
+                throw std::runtime_error("receiver_fuse_handoff candidate materialization mismatch");
+            }
+
+            workN = filteredIdR.size();
+            workSendSet = &filteredSendSet;
+            workRecvSet = &filteredRecvSet;
+            workIdS = &filteredIdS;
+            workIdR = &filteredIdR;
+
+            const uint64_t receiverDistinctHits = collectDistinctBlocks(filteredIdR).size();
+            prefilterGeneratedAcc += static_cast<uint64_t>(n) * 2;
+            prefilterFilteredAcc += workN * 2;
+            fpsi::stats::id_generated_total.store(prefilterGeneratedAcc, std::memory_order_relaxed);
+            fpsi::stats::id_filtered_total.store(prefilterFilteredAcc, std::memory_order_relaxed);
+
+            filterAuditTotals.s_id_generated_distinct += distinctSenderIds.size();
+            filterAuditTotals.r_id_generated_distinct += distinctReceiverIds.size();
+            filterAuditTotals.true_intersection_estimate += static_cast<uint64_t>(interIndices.size());
+            filterAuditTotals.r_total_hits += receiverDistinctHits;
+            filterAuditTotals.r_filtered_useless_ids += static_cast<uint64_t>(distinctReceiverIds.size()) - receiverDistinctHits;
+            stageRun.mark("prefilter done", totalCommBytes(sock, sock2));
+        }
+
+        if (workN == 0) {
+            time.setTimePoint("filter done");
+            stageRun.mark("filter done", totalCommBytes(sock, sock2));
+            time.setTimePoint("OT done");
+            stageRun.mark("OT done", totalCommBytes(sock, sock2));
+            continue;
         }
 
         std::vector<u8> choiceBit(workN, 0);
@@ -1131,7 +1246,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_S(workN * d);
             SoOPPRFCommStats soOpprfStats;
-            recv.OPPRF(inputs, rand_S, receiverOnlyReveal && enablePrefilter, soOpprfStats);
+            recv.OPPRF(inputs, rand_S, receiverOnlyReveal && enableLegacyPrefilter, soOpprfStats);
             filterOprfCommBytes = soOpprfStats.oprf_comm_bytes;
             filterOkvsCommBytes = soOpprfStats.okvs_comm_bytes;
 
@@ -1185,7 +1300,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
             filterVal.reserve(workN * d * (2 * delta + 1));
 
             for (u64 i = 0; i < workN; i++) {
-                if (receiverOnlyReveal && enablePrefilter && receiverPrefilterHitMask[i] == 0) {
+                if (receiverOnlyReveal && enableLegacyPrefilter && receiverPrefilterHitMask[i] == 0) {
                     continue;
                 }
 
@@ -1204,7 +1319,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
             std::vector<block> rand_R(workN * d);
 
-            if (receiverOnlyReveal && enablePrefilter) {
+            if (receiverOnlyReveal && enableLegacyPrefilter) {
                 send.OPPRF(filterKey, filterVal, rand_R, filterKey.size());
             } else {
                 send.OPPRF(filterKey, filterVal, rand_R);
@@ -1340,7 +1455,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
 
         stageRun.mark("OT done", totalCommBytes(sock, sock2));
 
-        if (enablePrefilter) {
+        if (enableAnyPrefilterPath) {
             std::vector<block> trueMatchedReceiverIds;
             trueMatchedReceiverIds.reserve(choiceBit.size());
 
@@ -1403,7 +1518,7 @@ void fuzzyPsiLp(const oc::CLP &cmd)
                   << " items." << std::endl;
     }
     printStageDiagnostics(verbose, time, stageSummary);
-    if (enablePrefilter) {
+    if (enableAnyPrefilterPath) {
         fpsi::stats::print_filter_audit_stats("fpsiFilterLp", filterAuditTotals, static_cast<uint64_t>(std::max(numTry, 1)));
     } else {
         fpsi::stats::id_filtered_total.store(
