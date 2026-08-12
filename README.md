@@ -95,28 +95,31 @@ cmake --build build -j
 本项目实验参考了以下 FPSI 开源实现。
 
 ### Gao et al.
+Efffcient Fuzzy Private Set Intersection from Fuzzy Mapping
 
 代码：
 
 https://github.com/ql70ql70/Fuzzy-Private-Set-Intersection-from-Fuzzy-Mapping
 
-论文：
-
-https://eprint.iacr.org/2024/1462
-
 
 ### Dang et al.
+Efffcient Fuzzy PSI Based on Preffx Representation
 
 代码：
 
 https://github.com/zhouxv/ourFuzzyPSI-C
 
-论文：
+### Piske et al.
+Distance-Aware OT with Application to Fuzzy PSI
 
-https://eprint.iacr.org/2025/1796
+代码：
+
+https://github.com/asu-crypto/daOT-fuzzyPSI
+
 
 
 ### Yang et al.
+Efffcient Fuzzy Private Set Intersection from Secret-shared OPRF
 
 代码：
 
