@@ -126,8 +126,8 @@ Important behavior:
 
 - `-p` defaults to `0`, so omitting `-p` runs the `L_infinity` path.
 - `-prefix` is a presence flag. Recommended usage is just `-prefix`.
-- `-prefilter bfuse` is only implemented in the non-prefix `L1/L2` path (`fuzzyPsiLp`).
-- `-reveal_mode` is only meaningful in that same non-prefix `L1/L2` path.
+- `-prefilter bfuse` is implemented in the non-prefix `L_infinity`, `L1`, and `L2` paths.
+- `-reveal_mode` is meaningful only for those non-prefix prefilter paths.
 - the main `fpsi` binary does not support `-fpr`; Binary Fuse prefilter configuration is fixed.
 
 ## Main Workflow Commands
@@ -199,9 +199,9 @@ Important behavior:
 | `-try` | all `fpsi` routes | number of repeated runs for averaging | `1` | summary output is averaged over runs |
 | `-v` | all `fpsi` routes | verbose mode | `0` | `1` prints stage timing tables, `2` also prints per-item intersection details |
 | `-prefix` | prefix routes only | enable prefix-optimized protocol path | off | presence flag; recommended form is just `-prefix` |
-| `-prefilter` | non-prefix `L1/L2` only | enable prefilter before the main `L1/L2` protocol | off | only `bfuse` is supported in the main path |
-| `-reveal_mode` | non-prefix `L1/L2` only | choose who learns the intersection | `receiver_only` | accepts `mutual`, `receiver_only`, `0`, `1`, plus compatibility synonyms |
-| `-sf` / `-safe_filter` | non-prefix `L1/L2` only | legacy alias of `-reveal_mode` | unset | `0 -> mutual`, `1 -> receiver_only` |
+| `-prefilter` | non-prefix `L_infinity`/`L1`/`L2` only | enable ID-level prefilter before the main online filter protocol | off | only `bfuse` is supported in the main path |
+| `-reveal_mode` | non-prefix prefilter paths only | choose who learns the intersection | `receiver_only` | accepts `mutual`, `receiver_only`, `0`, `1`, plus compatibility synonyms |
+| `-sf` / `-safe_filter` | non-prefix prefilter paths only | legacy alias of `-reveal_mode` | unset | `0 -> mutual`, `1 -> receiver_only` |
 | `-s` | prefix `L1/L2` route | prefix shift parameter | `0` | consumed by `fuzzyPsiLpPrefix()` only |
 
 ### Real notes about `-nn`
@@ -215,7 +215,7 @@ So in this repo, `-nn` is not only a size helper for `n`; it also affects the sy
 
 ### Real notes about prefiltering
 
-- main-path prefilter support exists only in `fuzzyPsiLp()` (`-p 1` or `-p 2`, without `-prefix`)
+- main-path prefilter support exists in `fuzzyPsi()` and `fuzzyPsiLp()` (`-p 0`, `-p 1`, or `-p 2`, without `-prefix`)
 - supported value is `-prefilter bfuse`
 - `-reveal_mode mutual` requires `-prefilter bfuse`
 - `-fpr` is intentionally rejected by `build/fpsi`
